@@ -23,6 +23,8 @@ Flow:
 import os
 import sys
 import argparse
+import json
+import json as json_lib
 import logging
 from pathlib import Path
 from datetime import date, datetime, timedelta
@@ -34,6 +36,9 @@ load_dotenv(override=True)
 # -- Ensure project root is on path --
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
+
+# -- Tracker imports (must come after sys.path setup) --
+from tracker.confluence_engine import ConfluenceEngine
 
 # -- Logging -------------------------------------------------------------------
 LOG_DIR = ROOT / "tracker" / "logs"
@@ -189,9 +194,12 @@ def combine_signals(claude_result: dict, gpt_result: dict) -> dict:
 
 
 def save_signal(combined: dict, claude_r: dict, gpt_r: dict,
-                levels: dict, price_data: dict, analysis_date: date):
+                levels: dict, price_data: dict, analysis_date: date,
+                scorecard: dict = None, confluence_price_data: dict = None,
+                confluence_market_data: dict = None):
     """Save the combined signal record to the database."""
     from tracker.database import get_session, Signal
+    from sqlalchemy import text as sa_text
     session = get_session()
     try:
         row = Signal(
@@ -228,8 +236,102 @@ def save_signal(combined: dict, claude_r: dict, gpt_r: dict,
             session             = london_session(analysis_date),
         )
         session.add(row)
+        session.flush()  # get the row id before setting confluence fields
+        flushed_id = int(row.id)  # capture id immediately -- row may expire after commit
+
+        # Add confluence fields via direct UPDATE if scorecard available
+        if scorecard and flushed_id:
+            pd_c = confluence_price_data or {}
+            md_c = confluence_market_data or {}
+            try:
+                def _safe(v):
+                    """Convert numpy scalars to Python native types for psycopg2."""
+                    if v is None:
+                        return None
+                    try:
+                        import numpy as np
+                        if isinstance(v, (np.integer,)):
+                            return int(v)
+                        if isinstance(v, (np.floating,)):
+                            return float(v)
+                        if isinstance(v, np.bool_):
+                            return bool(v)
+                    except ImportError:
+                        pass
+                    return v
+
+                factors_json = json.dumps(scorecard.get("factors", {}))
+                session.execute(sa_text("""
+                    UPDATE signals SET
+                        current_price = :current_price,
+                        price_50ma = :price_50ma,
+                        price_200ma = :price_200ma,
+                        above_200ma_conf = :above_200ma_conf,
+                        ma_alignment = :ma_alignment,
+                        trend_direction_conf = :trend_direction_conf,
+                        adx_value = :adx_value,
+                        trend_strength = :trend_strength,
+                        rsi_value = :rsi_value,
+                        rsi_condition = :rsi_condition,
+                        rsi_divergence = :rsi_divergence,
+                        nearest_support = :nearest_support,
+                        nearest_resistance = :nearest_resistance,
+                        at_key_level = :at_key_level,
+                        key_level_type = :key_level_type,
+                        key_level_price = :key_level_price,
+                        dxy_trend = :dxy_trend,
+                        dxy_1day_change_pct = :dxy_1day_change_pct,
+                        us_10yr_yield = :us_10yr_yield,
+                        uk_10yr_yield = :uk_10yr_yield,
+                        yield_spread = :yield_spread,
+                        yield_spread_direction = :yield_spread_direction,
+                        confluence_raw_score = :confluence_raw_score,
+                        confluence_max_possible = :confluence_max_possible,
+                        confluence_pct = :confluence_pct,
+                        confluence_grade = :confluence_grade,
+                        recommended_position_pct = :recommended_position_pct,
+                        confluence_summary = :confluence_summary,
+                        confluence_factors = :confluence_factors,
+                        confluence_data_completeness_pct = :confluence_data_completeness_pct
+                    WHERE id = :signal_id
+                """), {
+                    "current_price":                _safe(pd_c.get("current_price")),
+                    "price_50ma":                   _safe(pd_c.get("price_50ma")),
+                    "price_200ma":                  _safe(pd_c.get("price_200ma")),
+                    "above_200ma_conf":             _safe(pd_c.get("above_200ma")),
+                    "ma_alignment":                 pd_c.get("ma_alignment"),
+                    "trend_direction_conf":         pd_c.get("trend_direction"),
+                    "adx_value":                    _safe(pd_c.get("adx_value")),
+                    "trend_strength":               pd_c.get("trend_strength"),
+                    "rsi_value":                    _safe(pd_c.get("rsi_value")),
+                    "rsi_condition":                pd_c.get("rsi_condition"),
+                    "rsi_divergence":               pd_c.get("rsi_divergence"),
+                    "nearest_support":              _safe(pd_c.get("nearest_support")),
+                    "nearest_resistance":           _safe(pd_c.get("nearest_resistance")),
+                    "at_key_level":                 _safe(pd_c.get("at_key_level")),
+                    "key_level_type":               pd_c.get("key_level_type"),
+                    "key_level_price":              _safe(pd_c.get("key_level_price")),
+                    "dxy_trend":                    md_c.get("dxy_trend"),
+                    "dxy_1day_change_pct":          _safe(md_c.get("dxy_1day_change_pct")),
+                    "us_10yr_yield":                _safe(md_c.get("us_10yr")),
+                    "uk_10yr_yield":                _safe(md_c.get("uk_10yr")),
+                    "yield_spread":                 _safe(md_c.get("yield_spread")),
+                    "yield_spread_direction":       md_c.get("spread_direction"),
+                    "confluence_raw_score":         _safe(scorecard.get("raw_score")),
+                    "confluence_max_possible":      _safe(scorecard.get("max_possible")),
+                    "confluence_pct":               _safe(scorecard.get("confluence_pct")),
+                    "confluence_grade":             scorecard.get("grade"),
+                    "recommended_position_pct":     _safe(scorecard.get("position_size_pct")),
+                    "confluence_summary":           scorecard.get("summary_text", "")[:2000],
+                    "confluence_factors":           factors_json,
+                    "confluence_data_completeness_pct": _safe(scorecard.get("data_completeness")),
+                    "signal_id":                    flushed_id,
+                })
+            except Exception as ce:
+                log.warning("Could not save confluence fields: %s", ce)
+
         session.commit()
-        signal_id = row.id
+        signal_id = flushed_id
         session.close()
         log.info(f"Signal saved to database (id={signal_id})")
         return signal_id
@@ -408,6 +510,18 @@ def main():
         sys.exit(1)
     create_tables()
 
+    # --- Confluence: fetch technical data before AI analysis ---
+    price_data_conf = None
+    market_data_conf = None
+    scorecard = None
+    try:
+        engine_c = ConfluenceEngine()
+        price_data_conf = engine_c.fetch_price_data()
+        market_data_conf = engine_c.fetch_market_data()
+        log.info("Confluence data fetched OK")
+    except Exception as e:
+        log.error(f"Confluence data fetch failed (continuing without): {e}")
+
     # Step 3: Collect data
     log.info("Collecting market data...")
     from tracker.data_collector import DataCollector, save_snapshot
@@ -415,6 +529,30 @@ def main():
     ctx = dc.build_context()
     price_data = ctx.get("price_data") or {}
     save_snapshot(price_data, PAIR)
+
+    # Inject technical confluence context into the AI prompt context
+    if price_data_conf:
+        p = price_data_conf
+        tech_ctx = (
+            f"\nTECHNICAL CONTEXT (auto-calculated):\n"
+            f"Current price: {p['current_price']:.4f}\n"
+            f"50 MA: {p['price_50ma']:.4f} | 200 MA: {p['price_200ma']:.4f}\n"
+            f"Trend: {p['trend_direction']}\n"
+            f"ADX: {p.get('adx_value', 'N/A')} ({p.get('trend_strength', 'N/A')})\n"
+            f"RSI: {p.get('rsi_value', 'N/A')} ({p.get('rsi_condition', 'N/A')})\n"
+        )
+        if p.get('nearest_support') and p.get('distance_to_support_pips') is not None:
+            tech_ctx += f"Nearest support: {p['nearest_support']:.4f} ({p['distance_to_support_pips']:.0f} pips away)\n"
+        if p.get('nearest_resistance') and p.get('distance_to_resistance_pips') is not None:
+            tech_ctx += f"Nearest resistance: {p['nearest_resistance']:.4f} ({p['distance_to_resistance_pips']:.0f} pips away)\n"
+        if market_data_conf and market_data_conf.get('dxy_trend'):
+            tech_ctx += f"DXY: {market_data_conf['dxy_trend']} ({market_data_conf.get('dxy_1day_change_pct', 0):.2f}% change today)\n"
+        if market_data_conf and market_data_conf.get('spread_direction'):
+            tech_ctx += f"UK/US yield spread: {market_data_conf['spread_direction']}\n"
+        if isinstance(ctx, dict):
+            ctx['technical_context'] = tech_ctx
+        elif isinstance(ctx, str):
+            ctx = ctx + tech_ctx
 
     # Step 4: Claude analysis
     log.info("Running Claude (anthropic) analysis...")
@@ -441,11 +579,30 @@ def main():
     combined = combine_signals(claude_result, gpt_result)
     log.info(f"Combined signal: {combined['signal']} conf={combined['confidence']} agree={combined['providers_agree']}")
 
+    # --- Confluence: score the signal ---
+    try:
+        scorecard = engine_c.calculate_score(
+            signal=combined["signal"],
+            ai_confidence=combined["confidence"],
+            providers_agree=combined["providers_agree"],
+            price_data=price_data_conf,
+            market_data=market_data_conf,
+        )
+        log.info(f"Confluence score: {scorecard['confluence_pct']}% grade={scorecard['grade']}")
+    except Exception as e:
+        log.error(f"Confluence scoring failed (continuing without): {e}")
+        scorecard = None
+
     # Step 7: Trade levels
     levels = calculate_trade_levels(price_data, combined["signal"])
 
     # Step 8: Save signal
-    signal_id = save_signal(combined, claude_result, gpt_result, levels, price_data, analysis_date)
+    signal_id = save_signal(
+        combined, claude_result, gpt_result, levels, price_data, analysis_date,
+        scorecard=scorecard,
+        confluence_price_data=price_data_conf,
+        confluence_market_data=market_data_conf,
+    )
 
     # Step 9: Save costs
     save_costs(claude_result, gpt_result, analysis_date)
@@ -458,6 +615,28 @@ def main():
     # Step 11: Print summary
     print_terminal_summary(analysis_date, combined, levels, price_data,
                            claude_result, gpt_result, signal_id, run_cost, mtd_cost)
+
+    # Step 12: Print confluence output
+    if scorecard:
+        pct = scorecard['confluence_pct']
+        grade = scorecard['grade']
+        raw = scorecard['raw_score']
+        mx = scorecard['max_possible']
+        bar_len = 20
+        filled = int(bar_len * pct / 100)
+        bar = '#' * filled + '.' * (bar_len - filled)
+        print("-" * 50)
+        print(f"  CONFLUENCE: {pct}%  GRADE: {grade}")
+        print(f"  Score: {raw}/{mx}  [{bar}]")
+        print("-" * 50)
+        # supporting/conflicting are label strings in the existing engine
+        for lbl in scorecard.get('supporting', [])[:2]:
+            print(f"  [+] {lbl}")
+        for lbl in scorecard.get('conflicting', [])[:1]:
+            print(f"  [-] {lbl}")
+        print("-" * 50)
+        print(f"  POSITION SIZE: {scorecard['position_size_pct']}% risk")
+        print("-" * 50)
 
     log.info(f"=== run_daily.py complete. Signal ID: {signal_id} ===")
     sys.exit(0)

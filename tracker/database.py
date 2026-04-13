@@ -215,11 +215,69 @@ class Cost(Base):
 
 # ---- Public functions --------------------------------------------------------
 
+def add_confluence_columns():
+    """
+    Add confluence tracking columns to the signals table if they don't exist.
+    Uses ALTER TABLE with graceful fallback for both PostgreSQL and SQLite.
+    All columns are nullable -- safe to add to existing tables.
+    """
+    engine = get_engine()
+
+    confluence_cols = [
+        ("current_price",                "DECIMAL(10,5)"),
+        ("price_50ma",                   "DECIMAL(10,5)"),
+        ("price_200ma",                  "DECIMAL(10,5)"),
+        ("above_200ma_conf",             "BOOLEAN"),
+        ("ma_alignment",                 "TEXT"),
+        ("trend_direction_conf",         "TEXT"),
+        ("adx_value",                    "DECIMAL(6,2)"),
+        ("trend_strength",               "TEXT"),
+        ("rsi_value",                    "DECIMAL(6,2)"),
+        ("rsi_condition",                "TEXT"),
+        ("rsi_divergence",               "TEXT"),
+        ("nearest_support",              "DECIMAL(10,5)"),
+        ("nearest_resistance",           "DECIMAL(10,5)"),
+        ("at_key_level",                 "BOOLEAN"),
+        ("key_level_type",               "TEXT"),
+        ("key_level_price",              "DECIMAL(10,5)"),
+        ("dxy_trend",                    "TEXT"),
+        ("dxy_1day_change_pct",          "DECIMAL(6,3)"),
+        ("us_10yr_yield",                "DECIMAL(6,3)"),
+        ("uk_10yr_yield",                "DECIMAL(6,3)"),
+        ("yield_spread",                 "DECIMAL(6,3)"),
+        ("yield_spread_direction",       "TEXT"),
+        ("confluence_raw_score",         "INTEGER"),
+        ("confluence_max_possible",      "INTEGER"),
+        ("confluence_pct",               "DECIMAL(5,2)"),
+        ("confluence_grade",             "TEXT"),
+        ("recommended_position_pct",     "DECIMAL(4,2)"),
+        ("confluence_summary",           "TEXT"),
+        ("confluence_factors",           "TEXT"),
+        ("confluence_data_completeness_pct", "DECIMAL(5,2)"),
+    ]
+
+    with engine.connect() as conn:
+        for col_name, col_type in confluence_cols:
+            try:
+                conn.execute(text(
+                    f"ALTER TABLE signals ADD COLUMN {col_name} {col_type}"
+                ))
+                conn.commit()
+                log.info("Added column: signals.%s", col_name)
+            except Exception:
+                # Column likely already exists -- silently skip
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+
 def create_tables():
-    """Create all tables if they don't already exist."""
+    """Create all tables if they don't already exist, then add confluence columns."""
     engine = get_engine()
     Base.metadata.create_all(engine)
     log.info("All tables created (or already exist).")
+    add_confluence_columns()
     print("Database tables ready.")
 
 

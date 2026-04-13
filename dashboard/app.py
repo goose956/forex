@@ -14,6 +14,7 @@ Pages:
 
 import os
 import sys
+import json
 from pathlib import Path
 from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
@@ -161,7 +162,7 @@ def sidebar():
     st.sidebar.caption("GBP/USD AI Analysis System")
     st.sidebar.divider()
 
-    page = st.sidebar.radio("Navigation", ["Today", "Signal History", "Analytics", "Costs", "Settings"])
+    page = st.sidebar.radio("Navigation", ["Today", "Signal History", "Analytics", "Confluence", "Costs", "Settings"])
 
     st.sidebar.divider()
     st.sidebar.subheader("Filters")
@@ -711,6 +712,200 @@ def page_settings():
         st.error(f"Could not query database: {e}")
 
 
+# ---- Page 6: Confluence -------------------------------------------------------
+
+def page_confluence():
+    st.title("Confluence Analysis")
+
+    engine = get_db()
+
+    # Fetch today's signal
+    today = date.today().isoformat()
+    row = None
+    with engine.connect() as conn:
+        from sqlalchemy import text
+        row = conn.execute(text(
+            "SELECT * FROM signals WHERE analysis_date = :d ORDER BY id DESC LIMIT 1"
+        ), {'d': today}).fetchone()
+
+    # If today has no confluence data, try yesterday
+    if not row or not (row._mapping.get('confluence_grade')):
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        with engine.connect() as conn:
+            from sqlalchemy import text
+            row = conn.execute(text(
+                "SELECT * FROM signals WHERE analysis_date = :d ORDER BY id DESC LIMIT 1"
+            ), {'d': yesterday}).fetchone()
+
+    if not row or not (row._mapping.get('confluence_grade')):
+        st.info("Today's confluence data will appear after the morning analysis runs.")
+    else:
+        mapping = row._mapping
+        grade = mapping.get('confluence_grade') or 'N/A'
+        pct = mapping.get('confluence_pct') or 0
+        signal = mapping.get('signal') or 'N/A'
+        conf = mapping.get('confidence') or 0
+        agrees = mapping.get('providers_agree') or False
+        pos = mapping.get('recommended_position_pct') or 0
+        summary = mapping.get('confluence_summary') or ''
+        factors_json = mapping.get('confluence_factors') or '{}'
+        analysis_date = mapping.get('analysis_date') or 'N/A'
+
+        try:
+            factors = json.loads(factors_json) if factors_json else {}
+        except Exception:
+            factors = {}
+
+        # Grade colours
+        grade_colors = {'A+': '#1a7f37', 'A': '#1a7f37', 'B': '#9a6700', 'C': '#cf222e', 'D': '#cf222e'}
+        grade_color = grade_colors.get(grade, '#1a1a1a')
+
+        st.caption(f"Signal date: {analysis_date}")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown(
+                f"<div style='text-align:center'>"
+                f"<span style='font-size:3rem;font-weight:bold;color:{grade_color}'>{grade}</span>"
+                f"<br><span style='font-size:1.2rem'>{pct}%</span></div>",
+                unsafe_allow_html=True
+            )
+        with col2:
+            sig_color = '#1a7f37' if signal == 'BUY' else '#cf222e' if signal == 'SELL' else '#6e7781'
+            agree_icon = 'Yes' if agrees else 'No'
+            st.markdown(
+                f"<div style='text-align:center'>"
+                f"<span style='font-size:2rem;font-weight:bold;color:{sig_color}'>{signal}</span>"
+                f"<br>AI Confidence: {conf}/10<br>Providers agree: {agree_icon}</div>",
+                unsafe_allow_html=True
+            )
+        with col3:
+            pos_float = float(pos) if pos else 0.0
+            pos_label = {1.5: 'Aggressive', 1.0: 'Full Size', 0.5: 'Half Size',
+                         0.25: 'Minimum', 0.0: 'Avoid'}.get(pos_float, 'Unknown')
+            st.markdown(
+                f"<div style='text-align:center'>"
+                f"<span style='font-size:1.5rem;font-weight:bold'>{pos_label}</span>"
+                f"<br>{pos}% risk</div>",
+                unsafe_allow_html=True
+            )
+
+        st.markdown("---")
+
+        # Factor table
+        if factors:
+            st.subheader("Factor Breakdown")
+            rows = []
+            for fname, fdata in factors.items():
+                if not isinstance(fdata, dict):
+                    continue
+                score = fdata.get('score')
+                max_pts = fdata.get('max', 0)
+                value = fdata.get('value', 'N/A')
+                label = fdata.get('label', '')
+                if score is None:
+                    status = 'N/A'
+                elif score == max_pts:
+                    status = 'Full'
+                elif score == 0:
+                    status = 'Zero'
+                else:
+                    status = 'Partial'
+                rows.append({
+                    'Factor': fname.replace('_', ' ').title(),
+                    'Value': str(value) if value else 'N/A',
+                    'Score': f"{score}/{max_pts}" if score is not None else 'N/A',
+                    'Status': status,
+                    'Label': label,
+                })
+
+            df_factors = pd.DataFrame(rows)
+
+            def highlight_row(row):
+                if row['Status'] == 'Full':
+                    return ['background-color: #d4edda'] * len(row)
+                elif row['Status'] == 'Zero':
+                    return ['background-color: #f8d7da'] * len(row)
+                elif row['Status'] == 'Partial':
+                    return ['background-color: #fff3cd'] * len(row)
+                else:
+                    return ['background-color: #e9ecef'] * len(row)
+
+            st.dataframe(
+                df_factors[['Factor', 'Value', 'Score', 'Status', 'Label']].style.apply(highlight_row, axis=1),
+                use_container_width=True
+            )
+
+        if summary:
+            st.subheader("Analysis Summary")
+            st.info(summary)
+
+    st.markdown("---")
+
+    # Historical performance section
+    st.subheader("Historical Performance")
+    with engine.connect() as conn:
+        from sqlalchemy import text
+        outcome_count = conn.execute(text("SELECT COUNT(*) FROM outcomes")).scalar()
+
+    if outcome_count < 15:
+        st.info(
+            f"Historical analysis will appear once 15+ signal outcomes have been recorded.\n"
+            f"Currently: {outcome_count} outcomes recorded.\n"
+            f"Keep running the system daily -- this section unlocks automatically."
+        )
+    else:
+        with engine.connect() as conn:
+            from sqlalchemy import text
+            df_hist = pd.read_sql(text("""
+                SELECT s.confluence_grade, o.signal_correct as outcome
+                FROM signals s
+                JOIN outcomes o ON s.id = o.signal_id
+                WHERE s.confluence_grade IS NOT NULL
+            """), conn)
+
+        if not df_hist.empty:
+            grade_stats = df_hist.groupby('confluence_grade').apply(
+                lambda x: pd.Series({
+                    'win_rate': x['outcome'].astype(bool).mean() * 100,
+                    'count': len(x)
+                })
+            ).reset_index()
+            fig = px.bar(
+                grade_stats, x='confluence_grade', y='win_rate',
+                title='Win Rate by Confluence Grade',
+                color='confluence_grade',
+                color_discrete_map={'A+': '#1a7f37', 'A': '#2ea04f', 'B': '#9a6700',
+                                    'C': '#cf222e', 'D': '#8b0000'},
+                text='count',
+            )
+            fig.update_layout(yaxis_title='Win Rate %', xaxis_title='Grade',
+                              plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
+                              font=dict(color="#e0e0e0"))
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+
+    # Signal history with confluence
+    st.subheader("Signal History with Confluence")
+    with engine.connect() as conn:
+        from sqlalchemy import text
+        df_signals = pd.read_sql(text("""
+            SELECT s.analysis_date as date, s.signal, s.confidence as ai_confidence,
+                   s.confluence_grade, s.confluence_pct,
+                   o.signal_correct as outcome, o.pips_moved as pips_result
+            FROM signals s
+            LEFT JOIN outcomes o ON s.id = o.signal_id
+            ORDER BY s.analysis_date DESC
+            LIMIT 30
+        """), conn)
+
+    if not df_signals.empty:
+        st.dataframe(df_signals, use_container_width=True)
+    else:
+        st.info("No signals recorded yet.")
+
+
 # ---- Main router -------------------------------------------------------------
 
 def main():
@@ -723,6 +918,8 @@ def main():
         page_history(days, min_conf)
     elif page == "Analytics":
         page_analytics(days, min_conf)
+    elif page == "Confluence":
+        page_confluence()
     elif page == "Costs":
         page_costs()
     elif page == "Settings":

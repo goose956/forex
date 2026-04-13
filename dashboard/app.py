@@ -513,7 +513,97 @@ def page_analytics(days, min_conf):
             fig7.update_layout(plot_bgcolor="#0e1117", paper_bgcolor="#0e1117", font=dict(color="#e0e0e0"))
             st.plotly_chart(fig7, use_container_width=True)
 
-    # Row 5: AI pattern analysis
+    # Row 5: Provider accuracy breakdown
+    st.subheader("Provider Accuracy")
+    st.caption("How accurate is each AI provider individually?")
+
+    try:
+        engine = get_db()
+        with engine.connect() as conn:
+            from sqlalchemy import text as sqlt
+            df_prov = pd.read_sql(sqlt("""
+                SELECT s.claude_signal, s.claude_confidence,
+                       s.gpt_signal, s.gpt_confidence,
+                       s.providers_agree, s.signal AS combined_signal,
+                       o.signal_correct, o.pips_moved
+                FROM signals s
+                JOIN outcomes o ON s.id = o.signal_id
+                WHERE s.claude_signal IS NOT NULL
+                  AND s.gpt_signal IS NOT NULL
+            """), conn)
+
+        if df_prov.empty:
+            st.info("Provider accuracy data will appear once outcomes are recorded.")
+        else:
+            # Calculate per-provider accuracy
+            # Claude: was claude_signal correct direction vs pips_moved?
+            def provider_correct(row, provider):
+                sig = row[f'{provider}_signal']
+                pips = row['pips_moved'] if row['pips_moved'] is not None else 0
+                if sig == 'BUY':
+                    return pips > 0
+                elif sig == 'SELL':
+                    return pips < 0
+                return None  # HOLD -- exclude
+
+            df_prov['claude_correct'] = df_prov.apply(lambda r: provider_correct(r, 'claude'), axis=1)
+            df_prov['gpt_correct']    = df_prov.apply(lambda r: provider_correct(r, 'gpt'),    axis=1)
+
+            claude_data  = df_prov[df_prov['claude_correct'].notna()]
+            gpt_data     = df_prov[df_prov['gpt_correct'].notna()]
+            agree_data   = df_prov[df_prov['providers_agree'] == True]
+            disagree_data = df_prov[df_prov['providers_agree'] == False]
+
+            claude_wr  = round(claude_data['claude_correct'].mean() * 100, 1) if len(claude_data) > 0 else 0
+            gpt_wr     = round(gpt_data['gpt_correct'].mean() * 100, 1)       if len(gpt_data) > 0 else 0
+            agree_wr2  = round((agree_data['signal_correct'] == True).mean() * 100, 1)   if len(agree_data) > 0 else 0
+            disagree_wr2 = round((disagree_data['signal_correct'] == True).mean() * 100, 1) if len(disagree_data) > 0 else 0
+
+            # Summary metrics row
+            p1, p2, p3, p4 = st.columns(4)
+            p1.metric("Claude Win Rate",    f"{claude_wr}%",   f"{len(claude_data)} signals")
+            p2.metric("GPT-4o Win Rate",    f"{gpt_wr}%",      f"{len(gpt_data)} signals")
+            p3.metric("When Both Agree",    f"{agree_wr2}%",   f"{len(agree_data)} signals")
+            p4.metric("When Disagree",      f"{disagree_wr2}%", f"{len(disagree_data)} signals")
+
+            # Bar chart comparison
+            prov_df = pd.DataFrame({
+                'Provider': ['Claude', 'GPT-4o', 'Both Agree', 'Disagree'],
+                'Win Rate %': [claude_wr, gpt_wr, agree_wr2, disagree_wr2],
+                'Signals': [len(claude_data), len(gpt_data), len(agree_data), len(disagree_data)],
+            })
+            fig_prov = px.bar(
+                prov_df, x='Provider', y='Win Rate %',
+                title='Win Rate by Provider',
+                color='Win Rate %',
+                color_continuous_scale=['#cf222e', '#FF9800', '#1a7f37'],
+                text='Signals',
+            )
+            fig_prov.add_hline(y=50, line_dash="dash", line_color="#9e9e9e", annotation_text="50% baseline")
+            fig_prov.update_traces(texttemplate='%{text} signals', textposition='outside')
+            fig_prov.update_layout(paper_bgcolor="white", plot_bgcolor="#f8f9fa",
+                                   font=dict(color="#1a1a1a"), showlegend=False)
+            st.plotly_chart(fig_prov, use_container_width=True)
+
+            # Verdict
+            if claude_wr > gpt_wr + 10:
+                verdict = f"Claude is outperforming GPT-4o by {claude_wr - gpt_wr:.0f}% -- Claude signals carry more weight."
+            elif gpt_wr > claude_wr + 10:
+                verdict = f"GPT-4o is outperforming Claude by {gpt_wr - claude_wr:.0f}% -- GPT signals carry more weight."
+            else:
+                verdict = "Claude and GPT-4o are performing similarly -- neither has a clear edge yet."
+
+            if agree_wr2 > disagree_wr2 + 10:
+                verdict += f" Agreement signals win {agree_wr2}% vs {disagree_wr2}% when they disagree -- filter to agreement-only signals for best results."
+            elif len(agree_data) < 5:
+                verdict += " Not enough data yet to draw conclusions on agreement value."
+
+            st.info(verdict)
+
+    except Exception as e:
+        st.warning(f"Provider accuracy unavailable: {e}")
+
+    # Row 6: AI pattern analysis
     st.subheader("AI Pattern Analysis")
     st.caption("Ask Claude to analyse your signal history and identify patterns.")
     if st.button("Run Pattern Analysis"):

@@ -445,6 +445,83 @@ def write_daily_report(analysis_date: date, combined: dict, claude_r: dict,
     return filepath
 
 
+def send_signal_email(analysis_date, combined, levels, scorecard, run_cost):
+    """
+    Send a morning signal email via Gmail SMTP.
+    Requires EMAIL_FROM, EMAIL_PASSWORD, EMAIL_TO in .env or GitHub secrets.
+    Fails silently if credentials are not configured.
+    """
+    import smtplib
+    from email.mime.text import MIMEText
+
+    email_from = os.getenv("EMAIL_FROM", "")
+    email_pass = os.getenv("EMAIL_PASSWORD", "")
+    email_to   = os.getenv("EMAIL_TO", "")
+
+    if not all([email_from, email_pass, email_to]):
+        log.info("Email not configured -- skipping alert (set EMAIL_FROM, EMAIL_PASSWORD, EMAIL_TO to enable)")
+        return
+
+    try:
+        signal    = combined.get("signal", "UNKNOWN")
+        conf      = combined.get("confidence", 0)
+        agree     = combined.get("providers_agree", False)
+        entry     = levels.get("entry", 0)
+        sl        = levels.get("stop_loss", 0)
+        tp        = levels.get("take_profit", 0)
+        rr        = levels.get("risk_reward", 0)
+
+        grade     = scorecard["grade"]          if scorecard else "N/A"
+        pct       = scorecard["confluence_pct"] if scorecard else 0
+        pos_size  = scorecard["position_size_pct"] if scorecard else 0
+        summary   = scorecard["summary_text"]   if scorecard else ""
+
+        agree_str = "YES" if agree else "NO"
+        pos_label = {1.5: "Aggressive (1.5%)", 1.0: "Full (1%)",
+                     0.5: "Half (0.5%)", 0.25: "Minimum (0.25%)",
+                     0.0: "DO NOT TRADE"}.get(float(pos_size), f"{pos_size}%")
+
+        subject = f"GBP/USD Signal {analysis_date}: {signal} | Grade {grade} ({pct}%)"
+
+        body = f"""GBP/USD Daily Signal -- {analysis_date}
+{'=' * 50}
+
+SIGNAL:       {signal}
+CONFIDENCE:   {conf}/10
+PROVIDERS:    Agree = {agree_str}
+
+ENTRY:        {entry:.4f}
+STOP LOSS:    {sl:.4f}
+TAKE PROFIT:  {tp:.4f}
+RISK/REWARD:  1:{rr}
+
+CONFLUENCE:   {pct}% -- Grade {grade}
+POSITION:     {pos_label}
+
+{'=' * 50}
+{summary}
+{'=' * 50}
+
+Run cost: GBP {run_cost:.4f}
+Dashboard: check your Streamlit app for full details.
+"""
+
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"]    = email_from
+        msg["To"]      = email_to
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(email_from, email_pass)
+            server.send_message(msg)
+
+        log.info(f"Signal email sent to {email_to}")
+        print(f"  Email sent to {email_to}")
+
+    except Exception as e:
+        log.warning(f"Email send failed (non-critical): {e}")
+
+
 def print_terminal_summary(analysis_date, combined, levels, price_data,
                             claude_r, gpt_r, signal_id, run_cost, mtd_cost):
     """Print the clean terminal signal box."""
@@ -637,6 +714,9 @@ def main():
         print("-" * 50)
         print(f"  POSITION SIZE: {scorecard['position_size_pct']}% risk")
         print("-" * 50)
+
+    # Step 13: Send email alert
+    send_signal_email(analysis_date, combined, levels, scorecard, run_cost)
 
     log.info(f"=== run_daily.py complete. Signal ID: {signal_id} ===")
     sys.exit(0)

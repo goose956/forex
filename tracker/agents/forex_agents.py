@@ -90,10 +90,11 @@ State clearly whether you APPROVE or REJECT the trade.""",
 
 # ---- Cost constants (USD per 1M tokens) -------------------------------------
 PRICING = {
-    "claude-sonnet-4-6": (3.00, 15.00),
-    "claude-sonnet-4-5": (3.00, 15.00),
-    "gpt-4o":            (5.00, 15.00),
-    "gpt-4o-mini":       (0.15,  0.60),
+    "claude-sonnet-4-6":       (3.00, 15.00),
+    "claude-sonnet-4-5":       (3.00, 15.00),
+    "claude-haiku-4-5-20251001": (0.80,  4.00),
+    "gpt-4o":                  (5.00, 15.00),
+    "gpt-4o-mini":             (0.15,  0.60),
 }
 USD_TO_GBP = 0.79
 
@@ -148,11 +149,11 @@ class ForexTradingAgents:
         if self.provider == "anthropic":
             config["llm_provider"]    = "anthropic"
             config["deep_think_llm"]  = "claude-sonnet-4-6"
-            config["quick_think_llm"] = "claude-sonnet-4-6"
+            config["quick_think_llm"] = "claude-haiku-4-5-20251001"
             config["backend_url"]     = None
         else:
             config["llm_provider"]    = "openai"
-            config["deep_think_llm"]  = "gpt-4o"
+            config["deep_think_llm"]  = "gpt-4o-mini"
             config["quick_think_llm"] = "gpt-4o-mini"
             config["backend_url"]     = "https://api.openai.com/v1"
 

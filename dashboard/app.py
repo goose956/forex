@@ -36,24 +36,23 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---- Dark theme CSS ----------------------------------------------------------
+# ---- Light theme CSS ---------------------------------------------------------
 st.markdown("""
 <style>
-    .stApp { background-color: #0e1117; color: #e0e0e0; }
     .metric-card {
-        background: #1a1d26;
-        border: 1px solid #2d3141;
+        background: #f8f9fa;
+        border: 1px solid #dee2e6;
         border-radius: 8px;
         padding: 16px 20px;
         text-align: center;
     }
-    .signal-buy  { color: #00c853; font-size: 2rem; font-weight: bold; }
-    .signal-sell { color: #ff1744; font-size: 2rem; font-weight: bold; }
-    .signal-hold { color: #9e9e9e; font-size: 2rem; font-weight: bold; }
-    .agree-yes   { color: #00c853; }
-    .agree-no    { color: #ff9800; }
-    .win-row  td { color: #00c853 !important; }
-    .loss-row td { color: #ff1744 !important; }
+    .signal-buy  { color: #1a7f37; font-size: 2rem; font-weight: bold; }
+    .signal-sell { color: #cf222e; font-size: 2rem; font-weight: bold; }
+    .signal-hold { color: #6e7781; font-size: 2rem; font-weight: bold; }
+    .agree-yes   { color: #1a7f37; }
+    .agree-no    { color: #9a6700; }
+    .win-row  td { color: #1a7f37 !important; }
+    .loss-row td { color: #cf222e !important; }
 </style>
 """, unsafe_allow_html=True)
 

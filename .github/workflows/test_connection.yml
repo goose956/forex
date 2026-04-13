@@ -1,0 +1,55 @@
+name: Test System Connections
+
+on:
+  workflow_dispatch:   # Manual trigger only
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Test all connections
+        env:
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:       ${{ secrets.OPENAI_API_KEY }}
+          ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
+          DATABASE_URL:         ${{ secrets.DATABASE_URL }}
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from dotenv import load_dotenv
+          load_dotenv(override=True)
+
+          print('Testing database...')
+          from tracker.database import test_connection
+          assert test_connection(), 'DB failed'
+
+          print('Testing Anthropic API...')
+          import os, anthropic
+          c = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+          r = c.messages.create(model='claude-haiku-4-5-20251001', max_tokens=10, messages=[{'role':'user','content':'OK'}])
+          print('Anthropic: OK')
+
+          print('Testing OpenAI API...')
+          import openai
+          o = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+          r = o.chat.completions.create(model='gpt-4o-mini', max_tokens=5, messages=[{'role':'user','content':'OK'}])
+          print('OpenAI: OK')
+
+          print('All connections OK.')
+          "

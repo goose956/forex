@@ -189,60 +189,72 @@ def page_today(days, min_conf):
     all_signals  = load_signals(days=days)
     outcomes_map = load_outcomes()
 
-    # Today's signal
     today_signals = [s for s in signals if s.analysis_date == date.today()]
 
     if today_signals:
         sig = today_signals[0]
-        o   = outcomes_map.get(sig.id)
 
-        col1, col2, col3 = st.columns([1, 2, 1])
+        # ---- Row 1: Signal | Trade Levels | Providers ----
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            css_class = f"signal-{(sig.signal or 'hold').lower()}"
+            st.markdown(f'<div class="{css_class}" style="font-size:2.5rem;font-weight:bold">{sig.signal or "HOLD"}</div>', unsafe_allow_html=True)
+            st.metric("Confidence", f"{sig.confidence or 0}/10")
+            agree_txt = "Yes" if sig.providers_agree else "No"
+            st.metric("Providers Agree", agree_txt)
+            # Confluence grade if available
+            try:
+                grade = sig.confluence_grade
+                pct   = float(sig.confluence_pct or 0)
+                if grade:
+                    grade_colors = {"A+": "#1a7f37", "A": "#1a7f37", "B": "#9a6700", "C": "#cf222e", "D": "#cf222e"}
+                    gc = grade_colors.get(grade, "#1a1a1a")
+                    st.markdown(f'<span style="font-size:1.4rem;font-weight:bold;color:{gc}">Grade {grade}</span> <span style="color:#666">({pct:.0f}%)</span>', unsafe_allow_html=True)
+            except Exception:
+                pass
 
         with col2:
-            css_class = f"signal-{(sig.signal or 'hold').lower()}"
-            st.markdown(f'<div class="{css_class}">{sig.signal or "HOLD"}</div>', unsafe_allow_html=True)
-            st.metric("Confidence", f"{sig.confidence or 0}/10")
+            st.markdown("**Trade Levels**")
             st.metric("Entry",       f"{float(sig.entry_price  or 0):.5f}")
             st.metric("Stop Loss",   f"{float(sig.stop_loss    or 0):.5f}")
             st.metric("Take Profit", f"{float(sig.take_profit  or 0):.5f}")
             st.metric("Risk/Reward", f"1:{float(sig.risk_reward or 0):.1f}")
 
-        st.subheader("Provider Comparison")
-        ca, ga = st.columns(2)
-        with ca:
-            st.metric("Claude", sig.claude_signal or "N/A", f"{sig.claude_confidence or 0}/10")
-        with ga:
-            st.metric("GPT-4o", sig.gpt_signal or "N/A", f"{sig.gpt_confidence or 0}/10")
+        with col3:
+            st.markdown("**AI Votes**")
+            st.metric("Claude",  sig.claude_signal or "N/A", f"{sig.claude_confidence or 0}/10")
+            st.metric("GPT-4o",  sig.gpt_signal    or "N/A", f"{sig.gpt_confidence    or 0}/10")
+            # Show ensemble agreement if available
+            try:
+                vc  = sig.ensemble_vote_count
+                ap  = float(sig.ensemble_agreement_pct or 0)
+                if vc and vc > 2:
+                    st.metric("Ensemble", f"{ap:.0f}% agree", f"{vc} models")
+            except Exception:
+                pass
 
-        if sig.providers_agree:
-            st.success("Both providers agree.")
-        else:
-            st.warning("Providers disagree -- confidence penalised.")
-
+        # Primary reason expander
         if sig.primary_reason:
-            with st.expander("Primary reason"):
+            with st.expander("View reasoning"):
                 st.write(sig.primary_reason)
 
     else:
-        st.info("No signal for today yet.")
-        st.caption("Expected: 07:30 London time (run via GitHub Actions or manually).")
+        st.info("No signal for today yet. Expected: 07:00 UTC via GitHub Actions.")
         if st.button("Run Manual Analysis Now"):
-            st.info("To run manually, double-click:  scheduler/run_manual_analysis.bat")
+            st.info("Run in terminal:  python scripts/run_daily.py")
 
     st.divider()
 
-    # Key metrics
-    st.subheader("Key Metrics")
+    # ---- Row 2: Key metrics (compact) ----
     df = signals_to_df(all_signals, outcomes_map)
-
     if not df.empty:
-        resolved = df[df["Outcome"] != "Pending"]
-        wins     = resolved[resolved["Outcome"] == "Win"]
-        win_rate = round(len(wins) / len(resolved) * 100, 1) if len(resolved) > 0 else 0
+        resolved   = df[df["Outcome"] != "Pending"]
+        wins       = resolved[resolved["Outcome"] == "Win"]
+        win_rate   = round(len(wins) / len(resolved) * 100, 1) if len(resolved) > 0 else 0
         total_pips = resolved["Pips"].sum() if "Pips" in resolved.columns else 0
-
-        costs = load_costs(days=30)
-        mtd   = sum(float(c.cost_gbp or 0) for c in costs)
+        costs      = load_costs(days=30)
+        mtd        = sum(float(c.cost_gbp or 0) for c in costs)
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Signals", len(df))
@@ -250,18 +262,20 @@ def page_today(days, min_conf):
         m3.metric("Paper Pips",    f"{total_pips:+.0f}")
         m4.metric("Month Cost",    f"GBP {mtd:.2f}")
 
-    # Recent performance table
-    st.subheader("Recent Performance (14 days)")
-    recent = load_signals(days=14)
-    if recent:
-        rdf = signals_to_df(recent, outcomes_map)[
-            ["Date","Signal","Conf","Entry","SL","TP","Outcome","Pips","Agree"]
-        ]
-        st.dataframe(rdf, use_container_width=True, hide_index=True)
+    # ---- Row 3: Recent table + chart side by side ----
+    t_col, c_col = st.columns([1, 2])
 
-    # Price chart
-    st.subheader("GBP/USD — Last 60 Days")
-    _render_price_chart(all_signals, outcomes_map)
+    with t_col:
+        st.subheader("Recent (14 days)")
+        recent = load_signals(days=14)
+        if recent:
+            rdf = signals_to_df(recent, outcomes_map)
+            show = [c for c in ["Date","Signal","Conf","Outcome","Pips"] if c in rdf.columns]
+            st.dataframe(rdf[show], use_container_width=True, hide_index=True, height=320)
+
+    with c_col:
+        st.subheader("GBP/USD — Last 60 Days")
+        _render_price_chart(all_signals, outcomes_map)
 
 
 def _render_price_chart(signals, outcomes_map):

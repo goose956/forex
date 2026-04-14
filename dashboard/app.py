@@ -767,12 +767,119 @@ def page_settings():
 
     col_a, col_b = st.columns(2)
     with col_a:
-        if st.button("Export Full Database"):
-            signals      = load_signals(days=365)
-            outcomes_map = load_outcomes()
-            df = signals_to_df(signals, outcomes_map)
-            csv = df.to_csv(index=False)
-            st.download_button("Download signals.csv", csv, "signals_full.csv", "text/csv")
+        if st.button("Export Full Data (Excel)"):
+            try:
+                import io
+                import openpyxl
+                from sqlalchemy import text as sqlt
+
+                engine = get_db()
+                buf = io.BytesIO()
+
+                with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+
+                    # Sheet 1: Signals + confluence
+                    with engine.connect() as conn:
+                        df_sig = pd.read_sql(sqlt("SELECT * FROM signals ORDER BY analysis_date DESC"), conn)
+                    if not df_sig.empty:
+                        # Drop large JSON column to keep file readable
+                        if "confluence_factors" in df_sig.columns:
+                            df_sig = df_sig.drop(columns=["confluence_factors"])
+                        df_sig.to_excel(writer, sheet_name="Signals", index=False)
+
+                    # Sheet 2: Outcomes
+                    with engine.connect() as conn:
+                        df_out = pd.read_sql(sqlt("""
+                            SELECT s.analysis_date, s.signal, s.ai_confidence,
+                                   s.claude_signal, s.claude_confidence,
+                                   s.gpt_signal, s.gpt_confidence,
+                                   s.providers_agree, s.confluence_grade,
+                                   s.confluence_pct, s.entry_price,
+                                   s.stop_loss, s.take_profit,
+                                   o.outcome_date, o.pips_moved, o.signal_correct,
+                                   o.would_have_hit_tp, o.would_have_hit_sl,
+                                   o.max_favorable_pips, o.max_adverse_pips
+                            FROM signals s
+                            JOIN outcomes o ON s.id = o.signal_id
+                            ORDER BY s.analysis_date DESC
+                        """), conn)
+                    if not df_out.empty:
+                        df_out.to_excel(writer, sheet_name="Outcomes", index=False)
+
+                    # Sheet 3: Paper trades
+                    with engine.connect() as conn:
+                        df_vt = pd.read_sql(sqlt("""
+                            SELECT vt.opened_at, vt.direction, vt.confluence_grade,
+                                   vt.entry_price, vt.sl_pips, vt.tp_pips,
+                                   vt.risk_pct, vt.risk_gbp, vt.spread_cost_gbp,
+                                   vt.status, vt.outcome_type, vt.pips_result,
+                                   vt.gross_pnl_gbp, vt.net_pnl_gbp,
+                                   vt.opening_balance, vt.closing_balance,
+                                   vt.ai_confidence, vt.providers_agree
+                            FROM virtual_trades vt
+                            ORDER BY vt.opened_at DESC
+                        """), conn)
+                    if not df_vt.empty:
+                        df_vt.to_excel(writer, sheet_name="Paper Trades", index=False)
+
+                    # Sheet 4: Costs
+                    with engine.connect() as conn:
+                        df_cost = pd.read_sql(sqlt("SELECT * FROM costs ORDER BY run_date DESC"), conn)
+                    if not df_cost.empty:
+                        df_cost.to_excel(writer, sheet_name="API Costs", index=False)
+
+                    # Sheet 5: Summary for LLM context
+                    today = date.today()
+                    summary_rows = [
+                        ["Export date", str(today)],
+                        ["System", "GBP/USD Daily Forex Signal Tracker"],
+                        ["AI providers", "Claude (Anthropic) + GPT-4o-mini (OpenAI)"],
+                        ["Signal frequency", "Once per weekday at 07:00 UTC"],
+                        ["Trade resolution", "5 trading days (TP hit / SL hit / expiry)"],
+                        ["Starting paper balance", "GBP 1000"],
+                        ["Spread used", "1.5 pips"],
+                        ["", ""],
+                        ["--- CONFLUENCE SCORING ---", ""],
+                        ["Grade A+", "85-100% -- 1.5% risk"],
+                        ["Grade A",  "70-84%  -- 1.0% risk"],
+                        ["Grade B",  "55-69%  -- 0.5% risk (minimum real trade)"],
+                        ["Grade C",  "40-54%  -- shadow trade only (not in paper account)"],
+                        ["Grade D",  "below 40% -- skipped"],
+                        ["", ""],
+                        ["--- 7 CONFLUENCE FACTORS ---", ""],
+                        ["1. Trend alignment", "Price vs 200MA + 50MA (max 3pts)"],
+                        ["2. ADX strength", "Trend strength indicator (max 2pts)"],
+                        ["3. RSI condition", "Overbought/oversold (max 2pts)"],
+                        ["4. Key level", "Support/resistance proximity (max 2pts)"],
+                        ["5. DXY direction", "Dollar index trend (max 2pts)"],
+                        ["6. Yield spread", "UK vs US 10yr yields (max 3pts)"],
+                        ["7. RSI divergence", "Price/RSI divergence (max 2pts)"],
+                        ["AI confidence", "Combined AI score (max 3pts)"],
+                        ["Provider agreement", "Both providers agree (max 2pts)"],
+                        ["", ""],
+                        ["--- SUGGESTED LLM ANALYSIS QUESTIONS ---", ""],
+                        ["1", "Which confluence grade performs best? Is the scoring adding value?"],
+                        ["2", "Which individual factors correlate most with winning trades?"],
+                        ["3", "Is there a pattern in the days of week or market conditions for wins?"],
+                        ["4", "Do Claude and GPT agree more on winning trades than losing ones?"],
+                        ["5", "Is the paper account profitable? What is the expectancy per trade?"],
+                        ["6", "Which factors should be removed or weighted higher?"],
+                        ["7", "What minimum conditions would have filtered out the most losses?"],
+                    ]
+                    df_summary = pd.DataFrame(summary_rows, columns=["Field", "Value"])
+                    df_summary.to_excel(writer, sheet_name="LLM Context", index=False)
+
+                buf.seek(0)
+                fname = f"forex_tracker_export_{today}.xlsx"
+                st.download_button(
+                    label="Download Excel Export",
+                    data=buf,
+                    file_name=fname,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+                st.success(f"Ready: {fname} — 5 sheets: Signals, Outcomes, Paper Trades, API Costs, LLM Context")
+            except Exception as e:
+                st.error(f"Export failed: {e}")
 
     with col_b:
         backtest_date = st.date_input("Backtest date", value=date.today() - timedelta(days=7))

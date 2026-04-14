@@ -25,6 +25,9 @@ openai>=1.12.0
 # Scheduling (local)
 apscheduler>=3.10.0
 
+# Excel export
+openpyxl>=3.1.0
+
 # TradingAgents -- install from GitHub (not on PyPI)
 # This also installs all its dependencies (langgraph, langchain-anthropic, etc.)
 git+https://github.com/TauricResearch/TradingAgents.git

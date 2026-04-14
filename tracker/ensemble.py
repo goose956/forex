@@ -1,9 +1,13 @@
 """
 tracker/ensemble.py -- Multi-model ensemble voting for forex signals.
 
-Calls 3 cheap models via OpenRouter (OpenAI-compatible API).
+Calls 7 cheap models via OpenRouter (OpenAI-compatible API).
 Each model gets the pre-calculated technical context and votes independently.
 Graceful failure -- if OpenRouter unavailable, returns empty list.
+
+Current models (9 total including Claude + GPT):
+  openrouter: gemini-flash-1.5, llama-3.3-70b, deepseek-chat,
+              qwen-2.5-72b, mistral-7b, gemini-flash-1.5-8b, mistral-nemo
 """
 
 import os
@@ -16,9 +20,15 @@ USD_TO_GBP = 0.79
 
 # OpenRouter model pricing (USD per 1M tokens, input/output)
 OPENROUTER_PRICING = {
-    "google/gemini-flash-1.5":             (0.075, 0.30),
-    "meta-llama/llama-3.3-70b-instruct":   (0.10,  0.10),
-    "deepseek/deepseek-chat":              (0.27,  1.10),
+    # Original 3
+    "google/gemini-flash-1.5":             (0.075, 0.300),
+    "meta-llama/llama-3.3-70b-instruct":   (0.100, 0.100),
+    "deepseek/deepseek-chat":              (0.270, 1.100),
+    # Added for data collection phase
+    "qwen/qwen-2.5-72b-instruct":          (0.180, 0.180),  # Alibaba -- strong reasoning
+    "mistralai/mistral-7b-instruct":       (0.055, 0.055),  # Ultra cheap, fast
+    "google/gemini-flash-1.5-8b":          (0.038, 0.150),  # Cheapest Gemini variant
+    "mistralai/mistral-nemo":              (0.035, 0.080),  # Free tier on OpenRouter
 }
 
 OPENROUTER_MODELS = list(OPENROUTER_PRICING.keys())

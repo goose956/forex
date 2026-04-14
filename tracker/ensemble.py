@@ -6,8 +6,8 @@ Each model gets the pre-calculated technical context and votes independently.
 Graceful failure -- if OpenRouter unavailable, returns empty list.
 
 Current models (9 total including Claude + GPT):
-  openrouter: gemini-flash-1.5, llama-3.3-70b, deepseek-chat,
-              qwen-2.5-72b, mistral-7b, gemini-flash-1.5-8b, mistral-nemo
+  openrouter: llama-3.3-70b, deepseek-chat, qwen-2.5-72b, mistral-nemo,
+              gemini-2.0-flash, gemini-2.0-flash-lite, mistral-small-3.1
 """
 
 import os
@@ -20,15 +20,13 @@ USD_TO_GBP = 0.79
 
 # OpenRouter model pricing (USD per 1M tokens, input/output)
 OPENROUTER_PRICING = {
-    # Original 3
-    "google/gemini-flash-1.5":             (0.075, 0.300),
-    "meta-llama/llama-3.3-70b-instruct":   (0.100, 0.100),
-    "deepseek/deepseek-chat":              (0.270, 1.100),
-    # Added for data collection phase
-    "qwen/qwen-2.5-72b-instruct":          (0.180, 0.180),  # Alibaba -- strong reasoning
-    "mistralai/mistral-7b-instruct":       (0.055, 0.055),  # Ultra cheap, fast
-    "google/gemini-flash-1.5-8b":          (0.038, 0.150),  # Cheapest Gemini variant
-    "mistralai/mistral-nemo":              (0.035, 0.080),  # Free tier on OpenRouter
+    "meta-llama/llama-3.3-70b-instruct":   (0.100, 0.100),  # Meta -- confirmed working
+    "deepseek/deepseek-chat":              (0.270, 1.100),  # DeepSeek -- confirmed working
+    "qwen/qwen-2.5-72b-instruct":          (0.180, 0.180),  # Alibaba -- confirmed working
+    "mistralai/mistral-nemo":              (0.035, 0.080),  # Mistral -- confirmed working
+    "google/gemini-2.0-flash-001":         (0.100, 0.400),  # Google Gemini 2.0 Flash
+    "google/gemini-2.0-flash-lite-001":    (0.075, 0.300),  # Google Gemini 2.0 Flash Lite
+    "mistralai/mistral-small-3.1-24b-instruct": (0.100, 0.300),  # Mistral Small 3.1
 }
 
 OPENROUTER_MODELS = list(OPENROUTER_PRICING.keys())

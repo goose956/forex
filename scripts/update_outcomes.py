@@ -197,6 +197,18 @@ def main():
             log.info(f"Outcome saved: signal id={sig.id} "
                      f"correct={outcome['signal_correct']} "
                      f"pips={outcome['pips_moved']}")
+
+            # Close virtual paper trade
+            try:
+                from tracker.virtual_account import close_trade
+                vtrade = close_trade(session, sig.id, outcome)
+                if vtrade:
+                    pnl = float(vtrade.net_pnl_gbp or 0)
+                    bal = float(vtrade.closing_balance or 0)
+                    print(f"  Paper trade: {vtrade.outcome_type} | "
+                          f"P&L: GBP {pnl:+.2f} | Balance: GBP {bal:.2f}")
+            except Exception as e:
+                log.error(f"Virtual trade close failed (non-critical): {e}")
         except Exception as e:
             session.rollback()
             log.error(f"Failed to save outcome for signal id={sig.id}: {e}")

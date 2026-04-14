@@ -213,7 +213,98 @@ class Cost(Base):
     run_type      = Column(Text)   # daily / backtest / manual
 
 
+# ---- Table: virtual_trades ---------------------------------------------------
+class VirtualTrade(Base):
+    __tablename__ = "virtual_trades"
+
+    id                  = Column(Integer, primary_key=True)
+    signal_id           = Column(Integer, ForeignKey("signals.id"), nullable=False, unique=True)
+    opened_at           = Column(Date, nullable=False)
+    closed_at           = Column(Date, nullable=True)
+
+    direction           = Column(Text)           # BUY / SELL / HOLD
+    entry_price         = Column(Numeric(10, 5))
+    stop_loss           = Column(Numeric(10, 5))
+    take_profit         = Column(Numeric(10, 5))
+    sl_pips             = Column(Numeric(8, 1))
+    tp_pips             = Column(Numeric(8, 1))
+
+    opening_balance     = Column(Numeric(12, 2))  # account balance when trade opened
+    risk_pct            = Column(Numeric(5, 2))   # e.g. 1.0
+    risk_gbp            = Column(Numeric(10, 4))  # e.g. 10.00
+    value_per_pip       = Column(Numeric(10, 6))  # risk_gbp / sl_pips
+    spread_pips         = Column(Numeric(5, 2), default=1.5)
+    spread_cost_gbp     = Column(Numeric(10, 4))
+
+    status              = Column(Text, default="open")  # open / won / lost / expired / skipped
+    outcome_type        = Column(Text, nullable=True)   # tp_hit / sl_hit / expired
+    pips_result         = Column(Numeric(8, 1), nullable=True)
+    gross_pnl_gbp       = Column(Numeric(10, 4), nullable=True)
+    net_pnl_gbp         = Column(Numeric(10, 4), nullable=True)  # after spread
+    closing_balance     = Column(Numeric(12, 2), nullable=True)
+
+    confluence_grade    = Column(Text, nullable=True)
+    ai_confidence       = Column(Integer, nullable=True)
+    providers_agree     = Column(Boolean, nullable=True)
+
+
+# ---- Table: virtual_account --------------------------------------------------
+class VirtualAccount(Base):
+    __tablename__ = "virtual_account"
+
+    id              = Column(Integer, primary_key=True)
+    updated_at      = Column(Date, nullable=False)
+    balance         = Column(Numeric(12, 2), nullable=False)
+    total_trades    = Column(Integer, default=0)
+    open_trades     = Column(Integer, default=0)
+    total_pnl_gbp   = Column(Numeric(12, 4), default=0)
+    note            = Column(Text, nullable=True)
+
+
 # ---- Public functions --------------------------------------------------------
+
+def initialise_virtual_account(session):
+    """Create the virtual account row with 1000 GBP if it does not exist yet."""
+    from datetime import date as _date
+    existing = session.query(VirtualAccount).first()
+    if not existing:
+        session.add(VirtualAccount(
+            updated_at    = _date.today(),
+            balance       = 1000.00,
+            total_trades  = 0,
+            open_trades   = 0,
+            total_pnl_gbp = 0,
+            note          = "Account opened",
+        ))
+        session.commit()
+        log.info("Virtual account initialised with GBP 1000.00")
+
+
+def get_virtual_balance(session) -> float:
+    """Return the current virtual account balance as a float."""
+    row = session.query(VirtualAccount).order_by(VirtualAccount.id.desc()).first()
+    if row is None:
+        return 1000.00
+    return float(row.balance)
+
+
+def update_virtual_balance(session, new_balance: float, note: str = ""):
+    """Update the virtual account balance row."""
+    from datetime import date as _date
+    row = session.query(VirtualAccount).order_by(VirtualAccount.id.desc()).first()
+    if row is None:
+        session.add(VirtualAccount(
+            updated_at    = _date.today(),
+            balance       = new_balance,
+            note          = note,
+        ))
+    else:
+        row.balance    = new_balance
+        row.updated_at = _date.today()
+        row.note       = note
+    session.commit()
+    log.info(f"Virtual account balance updated: GBP {new_balance:.2f} ({note})")
+
 
 def add_confluence_columns():
     """

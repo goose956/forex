@@ -162,7 +162,7 @@ def sidebar():
     st.sidebar.caption("GBP/USD AI Analysis System")
     st.sidebar.divider()
 
-    page = st.sidebar.radio("Navigation", ["Today", "Signal History", "Analytics", "Confluence", "Costs", "Settings"])
+    page = st.sidebar.radio("Navigation", ["Today", "Signal History", "Analytics", "Confluence", "Account", "Costs", "Settings"])
 
     st.sidebar.divider()
     st.sidebar.subheader("Filters")
@@ -996,6 +996,256 @@ def page_confluence():
         st.info("No signals recorded yet.")
 
 
+# ---- Page 7: Account (Paper Trading) -----------------------------------------
+
+def page_account():
+    st.title("Paper Trading Account")
+    st.caption("Virtual GBP 1000 account -- 1.5 pip spread -- all trades in GBP")
+
+    engine = get_db()
+
+    try:
+        with engine.connect() as conn:
+            from sqlalchemy import text
+            df_trades = pd.read_sql(text("""
+                SELECT vt.*, s.analysis_date, s.signal AS sig_signal,
+                       s.confluence_grade AS sig_grade
+                FROM virtual_trades vt
+                JOIN signals s ON vt.signal_id = s.id
+                ORDER BY vt.opened_at DESC
+            """), conn)
+
+            account_row = conn.execute(text(
+                "SELECT * FROM virtual_account ORDER BY id DESC LIMIT 1"
+            )).fetchone()
+    except Exception as e:
+        st.warning(f"Could not load account data: {e}")
+        st.info("No paper trades recorded yet. The first trade will appear after tomorrow's morning analysis.")
+        return
+
+    if df_trades.empty or account_row is None:
+        st.info("No paper trades recorded yet. The first trade will appear after tomorrow's morning analysis.")
+        return
+
+    # ---- Top metrics row ------------------------------------------------
+    STARTING = 1000.0
+    balance   = float(account_row._mapping["balance"])
+    delta_gbp = balance - STARTING
+    ret_pct   = round((balance - STARTING) / STARTING * 100, 2)
+
+    closed_trades = df_trades[df_trades["status"].isin(["won", "lost", "expired"])]
+    open_trades   = df_trades[df_trades["status"] == "open"]
+
+    # Max drawdown
+    max_dd = 0.0
+    if not closed_trades.empty and "closing_balance" in closed_trades.columns:
+        sorted_closed = closed_trades.sort_values("opened_at").copy()
+        balances = [STARTING] + [float(b) for b in sorted_closed["closing_balance"] if b is not None]
+        peak = STARTING
+        for b in balances:
+            if b > peak:
+                peak = b
+            dd = (peak - b) / peak * 100 if peak > 0 else 0
+            if dd > max_dd:
+                max_dd = dd
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric(
+        "Current Balance",
+        f"GBP {balance:,.2f}",
+        delta=f"{'+' if delta_gbp >= 0 else ''}{delta_gbp:.2f} GBP",
+    )
+    m2.metric(
+        "Total Return",
+        f"{'+' if ret_pct >= 0 else ''}{ret_pct:.2f}%",
+    )
+    m3.metric("Open Trades", len(open_trades))
+    m4.metric("Max Drawdown", f"{max_dd:.1f}%")
+
+    st.divider()
+
+    # ---- Equity curve ---------------------------------------------------
+    st.subheader("Equity Curve")
+    if not closed_trades.empty:
+        eq = closed_trades.sort_values("opened_at")[
+            ["opened_at", "closing_balance", "status"]
+        ].copy()
+        eq["closing_balance"] = eq["closing_balance"].astype(float)
+        eq["opened_at"] = pd.to_datetime(eq["opened_at"])
+
+        # Build equity series starting from 1000
+        dates    = [pd.Timestamp(eq["opened_at"].iloc[0]) - pd.Timedelta(days=1)] + list(eq["opened_at"])
+        balances = [STARTING] + list(eq["closing_balance"])
+
+        fig_eq = go.Figure()
+
+        # Fill above starting line (green)
+        fig_eq.add_trace(go.Scatter(
+            x=dates, y=balances,
+            fill="tozeroy",
+            fillcolor="rgba(0,200,83,0.08)",
+            line=dict(color="#00c853", width=2),
+            name="Balance",
+            mode="lines",
+        ))
+
+        # Starting line
+        fig_eq.add_hline(
+            y=STARTING,
+            line_dash="dash",
+            line_color="#9e9e9e",
+            annotation_text="GBP 1000 start",
+        )
+
+        # Trade close dots
+        won_rows  = eq[eq["status"] == "won"]
+        lost_rows = eq[eq["status"].isin(["lost", "expired"])]
+
+        if not won_rows.empty:
+            fig_eq.add_trace(go.Scatter(
+                x=won_rows["opened_at"],
+                y=won_rows["closing_balance"].astype(float),
+                mode="markers",
+                marker=dict(color="#00c853", size=8, symbol="circle"),
+                name="Won",
+                showlegend=True,
+            ))
+
+        if not lost_rows.empty:
+            fig_eq.add_trace(go.Scatter(
+                x=lost_rows["opened_at"],
+                y=lost_rows["closing_balance"].astype(float),
+                mode="markers",
+                marker=dict(color="#cf222e", size=8, symbol="circle"),
+                name="Lost / Expired",
+                showlegend=True,
+            ))
+
+        fig_eq.update_layout(
+            plot_bgcolor="#0e1117",
+            paper_bgcolor="#0e1117",
+            font=dict(color="#e0e0e0"),
+            height=350,
+            yaxis_title="Balance (GBP)",
+            xaxis_title="Date",
+            margin=dict(l=10, r=10, t=20, b=10),
+        )
+        st.plotly_chart(fig_eq, use_container_width=True)
+    else:
+        st.caption("Equity curve will appear once the first trade closes.")
+
+    st.divider()
+
+    # ---- Trade statistics -----------------------------------------------
+    st.subheader("Trade Statistics")
+    c1, c2 = st.columns(2)
+
+    resolved = df_trades[df_trades["status"].isin(["won", "lost", "expired"])]
+    won      = resolved[resolved["status"] == "won"]
+    lost_exp = resolved[resolved["status"].isin(["lost", "expired"])]
+
+    n_total   = len(df_trades)
+    n_won     = len(won)
+    n_lost    = len(resolved) - n_won
+    n_expired = len(resolved[resolved["outcome_type"] == "expired"])
+    win_rate  = round(n_won / len(resolved) * 100, 1) if len(resolved) > 0 else 0.0
+    avg_win   = round(won["net_pnl_gbp"].astype(float).mean(), 2) if not won.empty else 0.0
+    avg_loss  = round(lost_exp["net_pnl_gbp"].astype(float).mean(), 2) if not lost_exp.empty else 0.0
+
+    with c1:
+        st.write(f"**Total trades:** {n_total}")
+        st.write(f"**Won / Lost / Expired:** {n_won} / {n_lost - n_expired} / {n_expired}")
+        st.write(f"**Win rate:** {win_rate}%")
+        st.write(f"**Average win:** GBP {avg_win:+.2f}")
+        st.write(f"**Average loss:** GBP {avg_loss:+.2f}")
+
+    total_gross = resolved["gross_pnl_gbp"].astype(float).sum() if not resolved.empty else 0.0
+    total_spread = resolved["spread_cost_gbp"].astype(float).sum() if not resolved.empty else 0.0
+    total_net   = resolved["net_pnl_gbp"].astype(float).sum() if not resolved.empty else 0.0
+    best_trade  = resolved["net_pnl_gbp"].astype(float).max() if not resolved.empty else 0.0
+    worst_trade = resolved["net_pnl_gbp"].astype(float).min() if not resolved.empty else 0.0
+
+    with c2:
+        st.write(f"**Total gross P&L:** GBP {total_gross:+.2f}")
+        st.write(f"**Total spread costs paid:** GBP {total_spread:.2f}")
+        st.write(f"**Total net P&L:** GBP {total_net:+.2f}")
+        st.write(f"**Best trade:** GBP {best_trade:+.2f}")
+        st.write(f"**Worst trade:** GBP {worst_trade:+.2f}")
+
+    st.divider()
+
+    # ---- Recent trades table --------------------------------------------
+    st.subheader("Recent Trades (last 20)")
+
+    display = df_trades.head(20).copy()
+
+    # Build display columns
+    cols_show = []
+    for col, label in [
+        ("opened_at",       "Date"),
+        ("direction",       "Direction"),
+        ("confluence_grade","Grade"),
+        ("entry_price",     "Entry"),
+        ("sl_pips",         "SL Pips"),
+        ("tp_pips",         "TP Pips"),
+        ("risk_gbp",        "Risk GBP"),
+        ("status",          "Result"),
+        ("net_pnl_gbp",     "P&L"),
+        ("closing_balance", "Balance"),
+    ]:
+        if col in display.columns:
+            display = display.rename(columns={col: label})
+            cols_show.append(label)
+
+    for c in ["P&L", "Risk GBP", "Entry"]:
+        if c in display.columns:
+            display[c] = pd.to_numeric(display[c], errors="coerce").round(2)
+    for c in ["SL Pips", "TP Pips"]:
+        if c in display.columns:
+            display[c] = pd.to_numeric(display[c], errors="coerce").round(1)
+
+    available_cols = [c for c in cols_show if c in display.columns]
+
+    def row_style(row):
+        status = str(row.get("Result", "")).lower()
+        if status == "won":
+            return ["background-color: #d4edda"] * len(row)
+        if status in ("lost",):
+            return ["background-color: #f8d7da"] * len(row)
+        if status == "open":
+            return ["background-color: #fff3cd"] * len(row)
+        return ["background-color: #e9ecef"] * len(row)
+
+    try:
+        styled = display[available_cols].style.apply(row_style, axis=1)
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+    except Exception:
+        st.dataframe(display[available_cols], use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ---- Grade performance table ----------------------------------------
+    st.subheader("Performance by Confluence Grade")
+
+    grade_col = "confluence_grade"
+    if grade_col in df_trades.columns and not resolved.empty:
+        resolved_copy = resolved.copy()
+        resolved_copy["net_pnl_gbp"] = pd.to_numeric(resolved_copy["net_pnl_gbp"], errors="coerce")
+
+        grade_stats = resolved_copy.groupby(grade_col).apply(
+            lambda g: pd.Series({
+                "Trades":      len(g),
+                "Win Rate %":  round((g["status"] == "won").mean() * 100, 1),
+                "Avg P&L GBP": round(g["net_pnl_gbp"].mean(), 2),
+                "Total P&L GBP": round(g["net_pnl_gbp"].sum(), 2),
+            })
+        ).reset_index().rename(columns={grade_col: "Grade"})
+
+        st.dataframe(grade_stats, use_container_width=True, hide_index=True)
+    else:
+        st.caption("Grade performance will appear once trades with confluence grades have closed.")
+
+
 # ---- Main router -------------------------------------------------------------
 
 def main():
@@ -1010,6 +1260,8 @@ def main():
         page_analytics(days, min_conf)
     elif page == "Confluence":
         page_confluence()
+    elif page == "Account":
+        page_account()
     elif page == "Costs":
         page_costs()
     elif page == "Settings":

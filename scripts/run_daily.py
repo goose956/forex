@@ -681,6 +681,39 @@ def main():
         confluence_market_data=market_data_conf,
     )
 
+    # Step 8b: Open virtual paper trade
+    vtrade = None
+    try:
+        from tracker.virtual_account import open_trade
+        from tracker.database import get_session, initialise_virtual_account
+        vsession = get_session()
+        initialise_virtual_account(vsession)
+        trade_signal = {
+            "id":            signal_id,
+            "signal":        combined["signal"],
+            "entry_price":   levels.get("entry"),
+            "stop_loss":     levels.get("stop_loss"),
+            "take_profit":   levels.get("take_profit"),
+            "analysis_date": analysis_date,
+            "ai_confidence": combined["confidence"],
+            "providers_agree": combined["providers_agree"],
+        }
+        vtrade = open_trade(
+            vsession,
+            trade_signal,
+            confluence_grade=scorecard["grade"] if scorecard else None,
+            risk_pct=scorecard["position_size_pct"] if scorecard else None,
+        )
+        if vtrade:
+            log.info(
+                "Paper trade opened: risk=GBP %.2f value_per_pip=GBP %.4f",
+                float(vtrade.risk_gbp),
+                float(vtrade.value_per_pip),
+            )
+        vsession.close()
+    except Exception as e:
+        log.error("Virtual trade open failed (non-critical): %s", e)
+
     # Step 9: Save costs
     save_costs(claude_result, gpt_result, analysis_date)
     run_cost = claude_result.get("estimated_cost_gbp", 0) + gpt_result.get("estimated_cost_gbp", 0)
@@ -713,6 +746,14 @@ def main():
             print(f"  [-] {lbl}")
         print("-" * 50)
         print(f"  POSITION SIZE: {scorecard['position_size_pct']}% risk")
+        print("-" * 50)
+
+    # Step 12b: Print paper trade info
+    if vtrade and vtrade.status == "open":
+        balance  = float(vtrade.opening_balance)
+        risk_gbp = float(vtrade.risk_gbp)
+        print(f"  PAPER TRADE: GBP {risk_gbp:.2f} at risk ({vtrade.risk_pct}% of GBP {balance:.2f})")
+        print(f"  Spread cost: GBP {float(vtrade.spread_cost_gbp):.4f}")
         print("-" * 50)
 
     # Step 13: Send email alert

@@ -437,6 +437,7 @@ class ConfluenceEngine:
         market_data: dict,
         agreement_pct=None,
         vote_count=None,
+        news_risk=None,
     ) -> dict:
         """
         Calculate a multi-factor confluence score for the given signal.
@@ -658,6 +659,25 @@ class ConfluenceEngine:
             "value": f"RSI divergence: {rsi_divergence}",
             "label": "RSI Divergence"
         }
+
+        # ---- FACTOR 8: News Risk (max 3 points -- can only reduce score) ----
+        if news_risk is not None:
+            rs = news_risk.get("risk_score", 3)
+            rl = news_risk.get("risk_level", "clear")
+            warn = news_risk.get("warning_message", "")
+            if rl == "binary":
+                f_news = 0; lbl = "BINARY EVENT TODAY -- signal invalid"
+            elif rl == "high":
+                f_news = 0; lbl = "High-impact news today -- do not trade"
+            elif rl == "medium":
+                f_news = 1; lbl = "One high-impact event today -- reduce size"
+            elif rl == "low":
+                f_news = 2; lbl = "High-impact event tomorrow -- advisory"
+            else:
+                f_news = 3; lbl = "No high-impact events -- clear to trade"
+            factors["news_risk"] = {"score": f_news, "max": 3, "value": rl, "label": lbl}
+        else:
+            factors["news_risk"] = {"score": None, "max": 3, "value": None, "label": "Calendar data unavailable"}
 
         # ---- AI Confidence (max 3) ----
         if ai_confidence is not None:

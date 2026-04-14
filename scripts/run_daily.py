@@ -40,6 +40,7 @@ sys.path.insert(0, str(ROOT))
 # -- Tracker imports (must come after sys.path setup) --
 from tracker.confluence_engine import ConfluenceEngine
 from tracker.ensemble import run_ensemble, calculate_consensus
+from tracker.news_calendar import assess_news_risk
 
 # -- Logging -------------------------------------------------------------------
 LOG_DIR = ROOT / "tracker" / "logs"
@@ -600,6 +601,16 @@ def main():
     except Exception as e:
         log.error(f"Confluence data fetch failed (continuing without): {e}")
 
+    # News risk assessment
+    news_risk = None
+    try:
+        news_risk = assess_news_risk(analysis_date)
+        log.info(f"News risk: {news_risk['risk_level']} ({len(news_risk['high_impact_today'])} high-impact today)")
+        if news_risk['warning_message']:
+            log.warning(f"NEWS RISK: {news_risk['warning_message']}")
+    except Exception as e:
+        log.error(f"News risk assessment failed (continuing): {e}")
+
     # --- Ensemble: run OpenRouter models (uses pre-fetched confluence data) ---
     ensemble_votes = []
     try:
@@ -690,6 +701,7 @@ def main():
             market_data=market_data_conf,
             agreement_pct=consensus.get("agreement_pct"),
             vote_count=consensus.get("vote_count"),
+            news_risk=news_risk,
         )
         log.info(f"Confluence score: {scorecard['confluence_pct']}% grade={scorecard['grade']}")
     except Exception as e:
@@ -806,6 +818,14 @@ def main():
             print(f"  {v['signal']:4s} {v['confidence']:2d}/10  {model_short}")
         print(f"  CONSENSUS: {consensus['final_signal']} ({consensus['agreement_pct']}% agreement)")
         print("-" * 50)
+
+    # News risk warning block
+    if news_risk and news_risk.get("warning_message"):
+        print("!" * 50)
+        print(f"  NEWS: {news_risk['warning_message']}")
+        if news_risk.get("binary_event_today"):
+            print("  RECOMMENDATION: DO NOT TRADE TODAY")
+        print("!" * 50)
 
     # Step 12: Print confluence output
     if scorecard:

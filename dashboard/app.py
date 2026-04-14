@@ -162,7 +162,7 @@ def sidebar():
     st.sidebar.caption("GBP/USD AI Analysis System")
     st.sidebar.divider()
 
-    page = st.sidebar.radio("Navigation", ["Today", "Signal History", "Analytics", "Confluence", "Account", "Costs", "Settings"])
+    page = st.sidebar.radio("Navigation", ["Today", "Signal History", "Analytics", "Confluence", "Account", "Costs", "News & Calendar", "Settings"])
 
     st.sidebar.divider()
     st.sidebar.subheader("Filters")
@@ -1497,6 +1497,99 @@ def page_account():
         st.caption("Grade performance will appear once trades with confluence grades have closed.")
 
 
+# ---- Page: News & Calendar ---------------------------------------------------
+
+def page_news():
+    st.title("News & Calendar")
+    st.caption("High-impact GBP and USD events this week -- source: Forex Factory")
+
+    try:
+        from tracker.news_calendar import assess_news_risk, get_week_events
+
+        risk = assess_news_risk()
+        rl = risk["risk_level"]
+
+        # Risk banner
+        if rl == "binary":
+            st.error(f"BINARY EVENT TODAY -- DO NOT TRADE\n{risk['warning_message']}")
+        elif rl == "high":
+            st.error(f"HIGH NEWS RISK -- {risk['warning_message']}")
+        elif rl == "medium":
+            st.warning(f"MEDIUM RISK -- {risk['warning_message']}")
+        elif rl == "low":
+            st.info(f"Low risk. {risk['warning_message']}")
+        else:
+            st.success("CLEAR -- No high-impact events today. Safe to trade.")
+
+        # Metrics
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Today's Risk", rl.upper())
+        c2.metric("High Impact Today", len(risk["high_impact_today"]))
+        c3.metric("High Impact Tomorrow", len(risk["high_impact_tomorrow"]))
+
+        st.divider()
+
+        # Today's events
+        st.subheader("Today's Events")
+        if risk["all_today"]:
+            rows = []
+            for e in risk["all_today"]:
+                rows.append({
+                    "Time": e.get("date", "")[:16].replace("T", " "),
+                    "Currency": e.get("country", ""),
+                    "Event": e.get("title", ""),
+                    "Impact": e.get("impact", ""),
+                    "Previous": e.get("previous", "") or "-",
+                    "Forecast": e.get("estimate", "") or "-",
+                    "Actual": e.get("actual", "") or "Pending",
+                })
+            df_today = pd.DataFrame(rows)
+
+            def colour_impact(row):
+                if row.get("Impact") == "High":
+                    return ["background-color: #f8d7da"] * len(row)
+                elif row.get("Impact") == "Medium":
+                    return ["background-color: #fff3cd"] * len(row)
+                return [""] * len(row)
+
+            try:
+                st.dataframe(df_today.style.apply(colour_impact, axis=1),
+                             use_container_width=True, hide_index=True)
+            except Exception:
+                st.dataframe(df_today, use_container_width=True, hide_index=True)
+        else:
+            st.info("No GBP or USD events today.")
+
+        st.divider()
+
+        # This week's high-impact events
+        st.subheader("This Week -- High Impact Only")
+        week_events = get_week_events()
+        all_high = []
+        for date_str, evts in sorted(week_events.items()):
+            for e in evts:
+                if e.get("impact") == "High":
+                    all_high.append({
+                        "Date": date_str,
+                        "Time": e.get("date", "")[:16].replace("T", " "),
+                        "Currency": e.get("country", ""),
+                        "Event": e.get("title", ""),
+                        "Previous": e.get("previous", "") or "-",
+                        "Forecast": e.get("estimate", "") or "-",
+                        "Actual": e.get("actual", "") or "Pending",
+                    })
+
+        if all_high:
+            st.dataframe(pd.DataFrame(all_high), use_container_width=True, hide_index=True)
+        else:
+            st.info("No high-impact GBP or USD events this week.")
+
+        st.caption("Data refreshed each page load from Forex Factory")
+
+    except Exception as e:
+        st.error(f"Could not load calendar: {e}")
+
+
 # ---- Main router -------------------------------------------------------------
 
 def main():
@@ -1515,6 +1608,8 @@ def main():
         page_account()
     elif page == "Costs":
         page_costs()
+    elif page == "News & Calendar":
+        page_news()
     elif page == "Settings":
         page_settings()
 

@@ -1244,8 +1244,9 @@ def page_account():
     ret_pct   = round((balance - STARTING) / STARTING * 100, 2)
 
     # Split real trades (B+) from shadow trades (C grade)
-    real_trades   = df_trades[~df_trades["status"].str.startswith("shadow", na=False) & (df_trades["status"] != "skipped")]
+    real_trades   = df_trades[~df_trades["status"].str.startswith("shadow", na=False) & (~df_trades["status"].isin(["skipped", "skipped_conflict"]))]
     shadow_trades = df_trades[df_trades["status"].str.startswith("shadow", na=False)]
+    conflict_skips = df_trades[df_trades["status"] == "skipped_conflict"]
     closed_trades = real_trades[real_trades["status"].isin(["won", "lost", "expired"])]
     open_trades   = real_trades[real_trades["status"] == "open"]
 
@@ -1486,6 +1487,23 @@ def page_account():
             shadow_display["Shadow P&L"] = pd.to_numeric(shadow_display["Shadow P&L"], errors="coerce").round(2)
 
         st.dataframe(shadow_display[show_cols], use_container_width=True, hide_index=True)
+
+    # ---- Conflict skips -------------------------------------------------
+    st.divider()
+    st.subheader("Skipped — Conflicting Signal")
+    st.caption("New signal was the opposite direction to an open trade. No trade placed to avoid holding opposing positions.")
+
+    if conflict_skips.empty:
+        st.info("No conflict skips recorded yet.")
+    else:
+        skip_display = conflict_skips.head(20).copy()
+        for col, label in [("opened_at","Date"),("direction","Would-be Direction"),
+                           ("confluence_grade","Grade"),("sl_pips","SL Pips"),("tp_pips","TP Pips")]:
+            if col in skip_display.columns:
+                skip_display = skip_display.rename(columns={col: label})
+        show_cols = [c for c in ["Date","Would-be Direction","Grade","SL Pips","TP Pips"]
+                     if c in skip_display.columns]
+        st.dataframe(skip_display[show_cols], use_container_width=True, hide_index=True)
 
     st.divider()
 

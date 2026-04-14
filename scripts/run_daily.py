@@ -122,25 +122,25 @@ def calculate_trade_levels(price_data: dict, signal: str) -> dict:
     support    = price_data.get("nearest_support")    or (close - atr * 2)
     resistance = price_data.get("nearest_resistance") or (close + atr * 2)
 
-    min_stop = atr * 1.2   # minimum stop distance = 1.2x ATR
+    min_stop = atr * 0.5   # ~50 pips at typical GBPUSD ATR
 
     if signal == "BUY":
         entry = close
-        sl    = max(support - atr * 0.3, entry - atr * 2)
-        sl    = min(sl, entry - min_stop)
+        sl    = max(support - atr * 0.1, entry - atr * 0.6)
+        sl    = min(sl, entry - min_stop)   # never tighter than min_stop
         dist  = entry - sl
-        tp    = entry + dist * 2.0
+        tp    = entry + dist * 2.0          # 1:2 R:R
     elif signal == "SELL":
         entry = close
-        sl    = min(resistance + atr * 0.3, entry + atr * 2)
+        sl    = min(resistance + atr * 0.1, entry + atr * 0.6)
         sl    = max(sl, entry + min_stop)
         dist  = sl - entry
         tp    = entry - dist * 2.0
     else:  # HOLD
         entry = close
-        sl    = close - atr * 2
-        tp    = close + atr * 4
-        dist  = atr * 2
+        sl    = close - atr * 0.6
+        tp    = close + atr * 1.2
+        dist  = atr * 0.6
 
     pips_stop  = abs(entry - sl) * 10000
     pips_tp    = abs(entry - tp) * 10000

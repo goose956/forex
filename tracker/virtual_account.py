@@ -54,6 +54,46 @@ def open_trade(session, signal, confluence_grade=None, risk_pct=None):
         )
         return None
 
+    # Check for conflicting open real trade (status='open')
+    # Shadow trades don't block — they're separate tracking
+    open_trade = session.query(VirtualTrade).filter_by(status="open").first()
+    if open_trade:
+        if open_trade.direction != direction:
+            log.info(
+                "open_trade: skipping signal_id=%s (%s) -- conflicts with open %s trade (signal_id=%s)",
+                signal.get("id"), direction, open_trade.direction, open_trade.signal_id,
+            )
+            # Still record a row so we can see skipped conflicts in the dashboard
+            skipped = VirtualTrade(
+                signal_id        = signal["id"],
+                opened_at        = signal.get("analysis_date"),
+                direction        = direction,
+                entry_price      = entry,
+                stop_loss        = sl,
+                take_profit      = tp,
+                sl_pips          = round(sl_pips, 1),
+                tp_pips          = round(tp_pips, 1),
+                opening_balance  = get_virtual_balance(session),
+                risk_pct         = 0,
+                risk_gbp         = 0,
+                value_per_pip    = 0,
+                spread_pips      = DEFAULT_SPREAD_PIPS,
+                spread_cost_gbp  = 0,
+                status           = "skipped_conflict",
+                confluence_grade = confluence_grade,
+                ai_confidence    = signal.get("ai_confidence") or signal.get("confidence"),
+                providers_agree  = signal.get("providers_agree"),
+            )
+            session.add(skipped)
+            session.commit()
+            return None
+        else:
+            log.info(
+                "open_trade: already in %s trade (signal_id=%s) -- skipping same-direction duplicate",
+                direction, open_trade.signal_id,
+            )
+            return None
+
     # Check for duplicate (already has a trade for this signal)
     existing = session.query(VirtualTrade).filter_by(signal_id=signal["id"]).first()
     if existing:

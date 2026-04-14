@@ -198,7 +198,7 @@ def combine_signals(claude_result: dict, gpt_result: dict) -> dict:
 def save_signal(combined: dict, claude_r: dict, gpt_r: dict,
                 levels: dict, price_data: dict, analysis_date: date,
                 scorecard: dict = None, confluence_price_data: dict = None,
-                confluence_market_data: dict = None):
+                confluence_market_data: dict = None, entry_strategy: dict = None):
     """Save the combined signal record to the database."""
     from tracker.database import get_session, Signal
     from sqlalchemy import text as sa_text
@@ -331,6 +331,28 @@ def save_signal(combined: dict, claude_r: dict, gpt_r: dict,
                 })
             except Exception as ce:
                 log.warning("Could not save confluence fields: %s", ce)
+
+        # Save entry strategy fields
+        if entry_strategy and flushed_id:
+            try:
+                session.execute(sa_text("""
+                    UPDATE signals SET
+                        order_type          = :order_type,
+                        smart_entry_price   = :smart_entry_price,
+                        entry_rationale     = :entry_rationale,
+                        pips_from_current   = :pips_from_current,
+                        order_expires_bars  = :order_expires_bars
+                    WHERE id = :signal_id
+                """), {
+                    "order_type":         entry_strategy.get("order_type"),
+                    "smart_entry_price":  entry_strategy.get("entry_price"),
+                    "entry_rationale":    (entry_strategy.get("entry_rationale") or "")[:500],
+                    "pips_from_current":  entry_strategy.get("pips_from_current"),
+                    "order_expires_bars": entry_strategy.get("expires_bars"),
+                    "signal_id":          flushed_id,
+                })
+            except Exception as ee:
+                log.warning("Could not save entry strategy fields: %s", ee)
 
         session.commit()
         signal_id = flushed_id
@@ -525,7 +547,8 @@ Dashboard: check your Streamlit app for full details.
 
 
 def print_terminal_summary(analysis_date, combined, levels, price_data,
-                            claude_r, gpt_r, signal_id, run_cost, mtd_cost):
+                            claude_r, gpt_r, signal_id, run_cost, mtd_cost,
+                            entry_strategy=None):
     """Print the clean terminal signal box."""
     signal = combined["signal"]
     conf   = combined["confidence"]
@@ -544,7 +567,19 @@ def print_terminal_summary(analysis_date, combined, levels, price_data,
     print("=" * 50)
     print(f"  SIGNAL:      {signal}")
     print(f"  CONFIDENCE:  {conf}/10  [{bar}]")
-    print(f"  ENTRY:       {levels['entry']:.5f}")
+
+    # Entry strategy (smart order type)
+    if entry_strategy:
+        order_type = entry_strategy.get("order_type", "market").upper()
+        entry_px   = entry_strategy.get("entry_price", levels["entry"])
+        pips_diff  = entry_strategy.get("pips_from_current", 0)
+        rationale  = entry_strategy.get("entry_rationale", "")
+        pips_str   = f"  ({pips_diff:+.0f} pips)" if pips_diff else ""
+        print(f"  ORDER TYPE:  {order_type}{pips_str}")
+        print(f"  ENTRY:       {entry_px:.5f}  [{rationale}]")
+    else:
+        print(f"  ENTRY:       {levels['entry']:.5f}")
+
     print(f"  STOP LOSS:   {levels['stop_loss']:.5f}  (-{levels['pips_stop']:.0f} pips)")
     print(f"  TAKE PROFIT: {levels['take_profit']:.5f}  (+{levels['pips_tp']:.0f} pips)")
     print(f"  RISK/REWARD: 1:{levels['risk_reward']}")
@@ -708,8 +743,22 @@ def main():
         log.error(f"Confluence scoring failed (continuing without): {e}")
         scorecard = None
 
-    # Step 7: Trade levels
+    # Step 7: Trade levels + smart entry strategy
     levels = calculate_trade_levels(price_data, combined["signal"])
+
+    # Calculate smart entry (limit/stop/market order type and price)
+    entry_strategy = None
+    try:
+        entry_strategy = engine_c.calculate_entry_strategy(price_data_conf, combined["signal"])
+        # Override entry price in levels with smart entry
+        if entry_strategy and entry_strategy["order_type"] != "market":
+            levels["entry"] = entry_strategy["entry_price"]
+        log.info(
+            f"Entry strategy: {entry_strategy['order_type']} at {entry_strategy['entry_price']:.5f} "
+            f"({entry_strategy['pips_from_current']:+.0f} pips) -- {entry_strategy['entry_rationale']}"
+        )
+    except Exception as e:
+        log.error(f"Entry strategy calculation failed (continuing): {e}")
 
     # Step 8: Save signal
     signal_id = save_signal(
@@ -717,6 +766,7 @@ def main():
         scorecard=scorecard,
         confluence_price_data=price_data_conf,
         confluence_market_data=market_data_conf,
+        entry_strategy=entry_strategy,
     )
 
     # Step 8b: Save ensemble model votes to database
@@ -806,7 +856,8 @@ def main():
 
     # Step 11: Print summary
     print_terminal_summary(analysis_date, combined, levels, price_data,
-                           claude_result, gpt_result, signal_id, run_cost, mtd_cost)
+                           claude_result, gpt_result, signal_id, run_cost, mtd_cost,
+                           entry_strategy=entry_strategy)
 
     # Step 11b: Print ensemble vote breakdown
     if consensus.get("all_votes"):

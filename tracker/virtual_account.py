@@ -27,6 +27,9 @@ def open_trade(session, signal, confluence_grade=None, risk_pct=None):
 
     direction = (signal.get("signal") or "HOLD").upper()
 
+    # Grade C = shadow trade (tracked but balance unaffected)
+    # Grade D = skipped entirely
+    # Grade B and above = real trade
     grade_to_risk = {"A+": 1.5, "A": 1.0, "B": 0.5, "C": 0.25, "D": 0.0, None: 0.5}
     if risk_pct is None:
         risk_pct = grade_to_risk.get(confluence_grade, 0.5)
@@ -66,7 +69,16 @@ def open_trade(session, signal, confluence_grade=None, risk_pct=None):
     value_per_pip   = round(risk_gbp / sl_pips, 6) if sl_pips > 0 else 0
     spread_cost_gbp = round(DEFAULT_SPREAD_PIPS * value_per_pip, 4)
 
-    trade_status = "open" if direction != "HOLD" and risk_pct > 0 else "skipped"
+    # Determine trade status:
+    # B+ grades = real trade (affects balance)
+    # C grade   = shadow trade (tracked, balance unaffected)
+    # D / HOLD  = skipped
+    if confluence_grade == "C":
+        trade_status = "shadow"
+    elif direction == "HOLD" or risk_pct == 0 or confluence_grade == "D":
+        trade_status = "skipped"
+    else:
+        trade_status = "open"
 
     trade = VirtualTrade(
         signal_id        = signal["id"],
@@ -117,7 +129,7 @@ def close_trade(session, signal_id, outcome):
         )
         return None
 
-    if trade.status not in ("open",):
+    if trade.status not in ("open", "shadow"):
         log.info(
             "close_trade: trade %s already closed (status=%s)", trade.id, trade.status
         )
@@ -151,24 +163,39 @@ def close_trade(session, signal_id, outcome):
     net_pnl         = round(gross_pnl - spread_cost_gbp, 4)
     closing_balance = round(opening_balance + net_pnl, 2)
 
+    is_shadow = (trade.status == "shadow")
+
     trade.closed_at       = outcome.get("outcome_date")
-    trade.status          = status
     trade.outcome_type    = outcome_type
     trade.pips_result     = pips_result
     trade.gross_pnl_gbp   = gross_pnl
     trade.net_pnl_gbp     = net_pnl
+    # Shadow trades: show what balance WOULD have been, but don't use it
     trade.closing_balance = closing_balance
+    # Mark final status as shadow_won / shadow_lost so they're clearly separate
+    if is_shadow:
+        trade.status = f"shadow_{status}" if status in ("won", "lost") else "shadow_expired"
+    else:
+        trade.status = status
 
     session.commit()
 
-    note = (
-        f"{outcome_type} on signal_id={signal_id} "
-        f"({'+' if net_pnl >= 0 else ''}{net_pnl:.2f} GBP)"
-    )
-    update_virtual_balance(session, closing_balance, note)
+    if is_shadow:
+        # Shadow trade: record P&L for reference but do NOT update real balance
+        log.info(
+            "Shadow trade closed: signal_id=%s %s pips=%+.0f shadow_pnl=GBP %+.4f (balance unchanged)",
+            signal_id, outcome_type, pips_result, net_pnl,
+        )
+    else:
+        # Real trade: update account balance
+        note = (
+            f"{outcome_type} on signal_id={signal_id} "
+            f"({'+' if net_pnl >= 0 else ''}{net_pnl:.2f} GBP)"
+        )
+        update_virtual_balance(session, closing_balance, note)
+        log.info(
+            "Virtual trade closed: signal_id=%s %s pips=%+.0f net_pnl=GBP %+.4f balance=GBP %.2f",
+            signal_id, outcome_type, pips_result, net_pnl, closing_balance,
+        )
 
-    log.info(
-        "Virtual trade closed: signal_id=%s %s pips=%+.0f net_pnl=GBP %+.4f balance=GBP %.2f",
-        signal_id, outcome_type, pips_result, net_pnl, closing_balance,
-    )
     return trade

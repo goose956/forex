@@ -1033,8 +1033,11 @@ def page_account():
     delta_gbp = balance - STARTING
     ret_pct   = round((balance - STARTING) / STARTING * 100, 2)
 
-    closed_trades = df_trades[df_trades["status"].isin(["won", "lost", "expired"])]
-    open_trades   = df_trades[df_trades["status"] == "open"]
+    # Split real trades (B+) from shadow trades (C grade)
+    real_trades   = df_trades[~df_trades["status"].str.startswith("shadow", na=False) & (df_trades["status"] != "skipped")]
+    shadow_trades = df_trades[df_trades["status"].str.startswith("shadow", na=False)]
+    closed_trades = real_trades[real_trades["status"].isin(["won", "lost", "expired"])]
+    open_trades   = real_trades[real_trades["status"] == "open"]
 
     # Max drawdown
     max_dd = 0.0
@@ -1140,11 +1143,11 @@ def page_account():
     st.subheader("Trade Statistics")
     c1, c2 = st.columns(2)
 
-    resolved = df_trades[df_trades["status"].isin(["won", "lost", "expired"])]
+    resolved = real_trades[real_trades["status"].isin(["won", "lost", "expired"])]
     won      = resolved[resolved["status"] == "won"]
     lost_exp = resolved[resolved["status"].isin(["lost", "expired"])]
 
-    n_total   = len(df_trades)
+    n_total   = len(real_trades)
     n_won     = len(won)
     n_lost    = len(resolved) - n_won
     n_expired = len(resolved[resolved["outcome_type"] == "expired"])
@@ -1175,9 +1178,9 @@ def page_account():
     st.divider()
 
     # ---- Recent trades table --------------------------------------------
-    st.subheader("Recent Trades (last 20)")
+    st.subheader("Recent Trades (last 20 — Grade B+ only)")
 
-    display = df_trades.head(20).copy()
+    display = real_trades.head(20).copy()
 
     # Build display columns
     cols_show = []
@@ -1224,8 +1227,60 @@ def page_account():
 
     st.divider()
 
+    # ---- Shadow trades (Grade C) ----------------------------------------
+    st.divider()
+    st.subheader("Grade C Shadow Trades")
+    st.caption("These trades were NOT placed — tracked for comparison only. Would Grade C signals have been profitable?")
+
+    if shadow_trades.empty:
+        st.info("No Grade C shadow trades recorded yet.")
+    else:
+        shadow_resolved = shadow_trades[shadow_trades["status"].isin(["shadow_won", "shadow_lost", "shadow_expired"])]
+        shadow_open     = shadow_trades[shadow_trades["status"] == "shadow"]
+
+        if not shadow_resolved.empty:
+            s_won  = len(shadow_resolved[shadow_resolved["status"] == "shadow_won"])
+            s_lost = len(shadow_resolved) - s_won
+            s_wr   = round(s_won / len(shadow_resolved) * 100, 1)
+            s_pnl  = shadow_resolved["net_pnl_gbp"].astype(float).sum()
+            s_avg  = shadow_resolved["net_pnl_gbp"].astype(float).mean()
+
+            sc1, sc2, sc3, sc4 = st.columns(4)
+            sc1.metric("Shadow Trades", len(shadow_resolved))
+            sc2.metric("Shadow Win Rate", f"{s_wr}%")
+            sc3.metric("Total Shadow P&L", f"GBP {s_pnl:+.2f}")
+            sc4.metric("Avg per Trade", f"GBP {s_avg:+.2f}")
+
+            verdict = ""
+            if len(shadow_resolved) >= 5:
+                if s_wr >= 55 and s_pnl > 0:
+                    verdict = "Grade C signals are profitable in shadow tracking. Consider lowering the minimum grade filter to C."
+                elif s_wr < 45 or s_pnl < 0:
+                    verdict = "Grade C signals are losing money in shadow tracking. The B+ filter is working correctly."
+                else:
+                    verdict = "Grade C signals are borderline. More data needed before drawing conclusions."
+                st.info(verdict)
+
+        # Shadow trade table
+        shadow_display = shadow_trades.head(20).copy()
+        for col, label in [("opened_at","Date"),("direction","Direction"),
+                           ("confluence_grade","Grade"),("sl_pips","SL Pips"),
+                           ("tp_pips","TP Pips"),("status","Result"),
+                           ("net_pnl_gbp","Shadow P&L")]:
+            if col in shadow_display.columns:
+                shadow_display = shadow_display.rename(columns={col: label})
+
+        show_cols = [c for c in ["Date","Direction","Grade","SL Pips","TP Pips","Result","Shadow P&L"]
+                     if c in shadow_display.columns]
+        if "Shadow P&L" in shadow_display.columns:
+            shadow_display["Shadow P&L"] = pd.to_numeric(shadow_display["Shadow P&L"], errors="coerce").round(2)
+
+        st.dataframe(shadow_display[show_cols], use_container_width=True, hide_index=True)
+
+    st.divider()
+
     # ---- Grade performance table ----------------------------------------
-    st.subheader("Performance by Confluence Grade")
+    st.subheader("Performance by Confluence Grade (Real Trades)")
 
     grade_col = "confluence_grade"
     if grade_col in df_trades.columns and not resolved.empty:

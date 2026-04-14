@@ -603,7 +603,96 @@ def page_analytics(days, min_conf):
     except Exception as e:
         st.warning(f"Provider accuracy unavailable: {e}")
 
-    # Row 6: AI pattern analysis
+    # Row 6: Model Leaderboard
+    st.subheader("Model Leaderboard")
+    st.caption("Accuracy of each AI model over time. Updates as outcomes are recorded.")
+
+    try:
+        engine = get_db()
+        with engine.connect() as conn:
+            from sqlalchemy import text as sqlt
+
+            # Get all OpenRouter model votes with outcomes
+            df_votes = pd.read_sql(sqlt("""
+                SELECT mv.model_name, mv.provider, mv.signal, mv.confidence,
+                       mv.was_correct, mv.pips_result, mv.analysis_date,
+                       mv.cost_gbp, mv.latency_ms
+                FROM model_votes mv
+                WHERE mv.was_correct IS NOT NULL
+            """), conn)
+
+            # Also include Claude and GPT from signals table
+            df_main = pd.read_sql(sqlt("""
+                SELECT
+                    'claude-sonnet-4-6' as model_name, 'anthropic' as provider,
+                    s.claude_signal as signal, s.claude_confidence as confidence,
+                    CASE WHEN s.claude_signal = o.outcome_signal THEN true ELSE false END as was_correct,
+                    o.pips_moved as pips_result, s.analysis_date,
+                    NULL::numeric as cost_gbp, NULL::integer as latency_ms
+                FROM signals s JOIN outcomes o ON s.id = o.signal_id
+                WHERE s.claude_signal IS NOT NULL
+                UNION ALL
+                SELECT
+                    'gpt-4o-mini' as model_name, 'openai' as provider,
+                    s.gpt_signal as signal, s.gpt_confidence as confidence,
+                    CASE WHEN s.gpt_signal = o.outcome_signal THEN true ELSE false END as was_correct,
+                    o.pips_moved as pips_result, s.analysis_date,
+                    NULL::numeric as cost_gbp, NULL::integer as latency_ms
+                FROM signals s JOIN outcomes o ON s.id = o.signal_id
+                WHERE s.gpt_signal IS NOT NULL
+            """), conn)
+
+        # Combine
+        df_all = pd.concat([df_main, df_votes], ignore_index=True) if not df_votes.empty else df_main
+
+        if df_all.empty:
+            st.info("Model leaderboard will appear once outcomes are recorded.")
+        else:
+            # Calculate stats per model
+            stats = df_all.groupby("model_name").apply(lambda g: pd.Series({
+                "Provider":    g["provider"].iloc[0],
+                "Signals":     len(g),
+                "Win Rate %":  round((g["was_correct"] == True).mean() * 100, 1),
+                "Avg Conf":    round(g["confidence"].mean(), 1),
+                "Avg Pips":    round(g["pips_result"].astype(float).mean(), 1),
+                "Rank Score":  round((g["was_correct"] == True).mean() * 100 + g["confidence"].mean(), 1),
+            })).reset_index().rename(columns={"model_name": "Model"})
+
+            # Sort by win rate
+            stats = stats.sort_values("Win Rate %", ascending=False).reset_index(drop=True)
+
+            # Add rank
+            stats.insert(0, "Rank", range(1, len(stats) + 1))
+
+            # Colour top model green, bottom red
+            def highlight_rank(row):
+                if row["Rank"] == 1:
+                    return ["background-color: #d4edda"] * len(row)
+                elif row["Rank"] == len(stats):
+                    return ["background-color: #f8d7da"] * len(row)
+                return [""] * len(row)
+
+            st.dataframe(
+                stats[["Rank", "Model", "Provider", "Signals", "Win Rate %", "Avg Conf", "Avg Pips"]].style.apply(highlight_rank, axis=1),
+                use_container_width=True, hide_index=True
+            )
+
+            if len(stats) >= 2:
+                best      = stats.iloc[0]["Model"]
+                worst     = stats.iloc[-1]["Model"]
+                best_wr   = stats.iloc[0]["Win Rate %"]
+                worst_wr  = stats.iloc[-1]["Win Rate %"]
+                if best_wr - worst_wr > 10:
+                    st.info(f"{best} is the top performer at {best_wr}% win rate. "
+                            f"Consider weighting its signals more heavily. "
+                            f"{worst} is weakest at {worst_wr}%.")
+                else:
+                    st.info("All models performing similarly. More data needed to identify the best performers.")
+
+    except Exception as e:
+        st.caption(f"Model leaderboard unavailable: {e}")
+
+    # Row 7: AI pattern analysis
     st.subheader("AI Pattern Analysis")
     st.caption("Ask Claude to analyse your signal history and identify patterns.")
     if st.button("Run Pattern Analysis"):

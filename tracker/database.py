@@ -248,6 +248,26 @@ class VirtualTrade(Base):
     providers_agree     = Column(Boolean, nullable=True)
 
 
+# ---- Table: model_votes ------------------------------------------------------
+class ModelVote(Base):
+    __tablename__ = "model_votes"
+
+    id            = Column(Integer, primary_key=True)
+    signal_id     = Column(Integer, ForeignKey("signals.id"), nullable=False)
+    analysis_date = Column(Date, nullable=False)
+    model_name    = Column(Text, nullable=False)   # e.g. "google/gemini-flash-1.5"
+    provider      = Column(Text, nullable=False)   # "openrouter", "anthropic", "openai"
+    signal        = Column(Text)                   # BUY / SELL / HOLD
+    confidence    = Column(Integer)               # 1-10
+    reasoning     = Column(Text)
+    cost_usd      = Column(Numeric(10, 6))
+    cost_gbp      = Column(Numeric(10, 6))
+    latency_ms    = Column(Integer)
+    # Outcome tracking (filled in by update_outcomes.py)
+    was_correct   = Column(Boolean, nullable=True)
+    pips_result   = Column(Numeric(8, 1), nullable=True)
+
+
 # ---- Table: virtual_account --------------------------------------------------
 class VirtualAccount(Base):
     __tablename__ = "virtual_account"
@@ -363,12 +383,38 @@ def add_confluence_columns():
                     pass
 
 
+def add_ensemble_columns():
+    """
+    Add ensemble tracking columns to the signals table if they don't exist.
+    All columns are nullable -- safe to add to existing tables.
+    """
+    engine = get_engine()
+    ensemble_cols = [
+        ("ensemble_vote_count",    "INTEGER"),
+        ("ensemble_agreement_pct", "DECIMAL(5,2)"),
+    ]
+    with engine.connect() as conn:
+        for col_name, col_type in ensemble_cols:
+            try:
+                conn.execute(text(
+                    f"ALTER TABLE signals ADD COLUMN {col_name} {col_type}"
+                ))
+                conn.commit()
+                log.info("Added column: signals.%s", col_name)
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+
 def create_tables():
-    """Create all tables if they don't already exist, then add confluence columns."""
+    """Create all tables if they don't already exist, then add confluence and ensemble columns."""
     engine = get_engine()
     Base.metadata.create_all(engine)
     log.info("All tables created (or already exist).")
     add_confluence_columns()
+    add_ensemble_columns()
     print("Database tables ready.")
 
 

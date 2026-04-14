@@ -39,6 +39,7 @@ sys.path.insert(0, str(ROOT))
 
 # -- Tracker imports (must come after sys.path setup) --
 from tracker.confluence_engine import ConfluenceEngine
+from tracker.ensemble import run_ensemble, calculate_consensus
 
 # -- Logging -------------------------------------------------------------------
 LOG_DIR = ROOT / "tracker" / "logs"
@@ -599,6 +600,15 @@ def main():
     except Exception as e:
         log.error(f"Confluence data fetch failed (continuing without): {e}")
 
+    # --- Ensemble: run OpenRouter models (uses pre-fetched confluence data) ---
+    ensemble_votes = []
+    try:
+        ensemble_votes = run_ensemble(price_data_conf, market_data_conf)
+        if ensemble_votes:
+            log.info(f"Ensemble: {len(ensemble_votes)} models voted")
+    except Exception as e:
+        log.error(f"Ensemble failed (continuing without): {e}")
+
     # Step 3: Collect data
     log.info("Collecting market data...")
     from tracker.data_collector import DataCollector, save_snapshot
@@ -656,14 +666,30 @@ def main():
     combined = combine_signals(claude_result, gpt_result)
     log.info(f"Combined signal: {combined['signal']} conf={combined['confidence']} agree={combined['providers_agree']}")
 
+    # Calculate consensus across all models (ensemble + existing providers)
+    consensus = calculate_consensus(claude_result, gpt_result, ensemble_votes)
+    providers_agree = consensus["providers_agree"]
+    # Use consensus confidence if ensemble ran, otherwise keep existing
+    if ensemble_votes and consensus.get("avg_confidence"):
+        combined_confidence = consensus["avg_confidence"]
+    else:
+        combined_confidence = combined["confidence"]
+    combined["providers_agree"] = providers_agree
+    combined["confidence"] = combined_confidence
+    final_signal = consensus["final_signal"]
+    combined["signal"] = final_signal
+    log.info(f"Consensus: {final_signal} {consensus['agreement_pct']}% agreement ({consensus['vote_count']} models)")
+
     # --- Confluence: score the signal ---
     try:
         scorecard = engine_c.calculate_score(
             signal=combined["signal"],
             ai_confidence=combined["confidence"],
-            providers_agree=combined["providers_agree"],
+            providers_agree=providers_agree,
             price_data=price_data_conf,
             market_data=market_data_conf,
+            agreement_pct=consensus.get("agreement_pct"),
+            vote_count=consensus.get("vote_count"),
         )
         log.info(f"Confluence score: {scorecard['confluence_pct']}% grade={scorecard['grade']}")
     except Exception as e:
@@ -681,7 +707,51 @@ def main():
         confluence_market_data=market_data_conf,
     )
 
-    # Step 8b: Open virtual paper trade
+    # Step 8b: Save ensemble model votes to database
+    try:
+        from tracker.database import get_session, ModelVote
+        vsession = get_session()
+        for vote in consensus.get("all_votes", []):
+            # Skip Claude and GPT -- already tracked in signals table
+            if vote.get("provider") == "openrouter":
+                mv = ModelVote(
+                    signal_id     = signal_id,
+                    analysis_date = analysis_date,
+                    model_name    = vote["model_name"],
+                    provider      = vote["provider"],
+                    signal        = vote["signal"],
+                    confidence    = vote["confidence"],
+                    reasoning     = vote.get("reasoning", ""),
+                    cost_usd      = vote.get("cost_usd", 0),
+                    cost_gbp      = vote.get("cost_gbp", 0),
+                    latency_ms    = vote.get("latency_ms", 0),
+                )
+                vsession.add(mv)
+        vsession.commit()
+        vsession.close()
+        or_count = len([v for v in consensus.get("all_votes", []) if v.get("provider") == "openrouter"])
+        log.info(f"Model votes saved: {or_count} OpenRouter votes")
+    except Exception as e:
+        log.error(f"Failed to save model votes (non-critical): {e}")
+
+    # Step 8b-ii: Update signals table with ensemble summary fields
+    if signal_id and ensemble_votes:
+        try:
+            from tracker.database import get_engine
+            from sqlalchemy import text as sa_text2
+            eng = get_engine()
+            with eng.connect() as conn:
+                conn.execute(sa_text2("""
+                    UPDATE signals SET
+                        ensemble_vote_count = :vc,
+                        ensemble_agreement_pct = :ap
+                    WHERE id = :sid
+                """), {"vc": consensus["vote_count"], "ap": consensus["agreement_pct"], "sid": signal_id})
+                conn.commit()
+        except Exception as e:
+            log.error(f"Could not update ensemble fields: {e}")
+
+    # Step 8c: Open virtual paper trade
     vtrade = None
     try:
         from tracker.virtual_account import open_trade
@@ -725,6 +795,17 @@ def main():
     # Step 11: Print summary
     print_terminal_summary(analysis_date, combined, levels, price_data,
                            claude_result, gpt_result, signal_id, run_cost, mtd_cost)
+
+    # Step 11b: Print ensemble vote breakdown
+    if consensus.get("all_votes"):
+        print("-" * 50)
+        print(f"  ENSEMBLE VOTE ({consensus['vote_count']} models, {consensus['agreement_pct']}% agree)")
+        print("-" * 50)
+        for v in consensus["all_votes"]:
+            model_short = v["model_name"].split("/")[-1][:20]
+            print(f"  {v['signal']:4s} {v['confidence']:2d}/10  {model_short}")
+        print(f"  CONSENSUS: {consensus['final_signal']} ({consensus['agreement_pct']}% agreement)")
+        print("-" * 50)
 
     # Step 12: Print confluence output
     if scorecard:

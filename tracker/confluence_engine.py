@@ -435,6 +435,8 @@ class ConfluenceEngine:
         providers_agree: bool,
         price_data: dict,
         market_data: dict,
+        agreement_pct=None,
+        vote_count=None,
     ) -> dict:
         """
         Calculate a multi-factor confluence score for the given signal.
@@ -676,20 +678,35 @@ class ConfluenceEngine:
         }
 
         # ---- Provider Agreement (max 2) ----
-        if providers_agree is not None:
-            # Check if both agree AND both >= 7 -- we only have combined confidence here
-            # Use ai_confidence as proxy for combined score
-            if providers_agree and (ai_confidence or 0) >= 7:
+        conf = ai_confidence or 0
+        if agreement_pct is not None and vote_count and vote_count >= 3:
+            # Multi-model: score based on agreement percentage
+            if agreement_pct >= 80:
                 f_agree = 2
-            elif providers_agree:
+                lbl = f'{agreement_pct}% of {vote_count} models agree -- strong consensus'
+            elif agreement_pct >= 60:
                 f_agree = 1
+                lbl = f'{agreement_pct}% of {vote_count} models agree -- majority'
             else:
                 f_agree = 0
+                lbl = f'Models split ({agreement_pct}% agreement) -- low conviction'
+        elif providers_agree is not None:
+            # Fallback to binary agree/disagree
+            if providers_agree and conf >= 7:
+                f_agree = 2
+                lbl = 'Both AI providers agree with high confidence'
+            elif providers_agree:
+                f_agree = 1
+                lbl = 'Both AI providers agree'
+            else:
+                f_agree = 0
+                lbl = 'AI providers disagree -- treat with caution'
         else:
             f_agree = None
+            lbl = 'Provider agreement unknown'
         factors["provider_agreement"] = {
             "score": f_agree, "max": 2,
-            "value": f"Providers agree: {providers_agree}",
+            "value": lbl if f_agree is not None else f"Providers agree: {providers_agree}",
             "label": "Provider Agreement"
         }
 

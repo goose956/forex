@@ -198,6 +198,18 @@ def main():
                      f"correct={outcome['signal_correct']} "
                      f"pips={outcome['pips_moved']}")
 
+            # Update model vote accuracy
+            try:
+                from tracker.database import ModelVote
+                votes = session.query(ModelVote).filter_by(signal_id=sig.id).all()
+                for mv in votes:
+                    if mv.signal and mv.signal.upper() != 'HOLD':
+                        mv.was_correct = outcome["signal_correct"] if mv.signal.upper() == sig.signal.upper() else not outcome["signal_correct"]
+                        mv.pips_result = outcome["pips_moved"]
+                session.commit()
+            except Exception as e:
+                log.error(f"Could not update model vote accuracy: {e}")
+
             # Close virtual paper trade
             try:
                 from tracker.virtual_account import close_trade

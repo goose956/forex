@@ -36,13 +36,11 @@ jobs:
           echo "=== Model in forex_agents.py ==="
           grep -E "ANTHROPIC_MODEL|OPENAI_MODEL" tracker/agents/forex_agents.py || true
           echo "=== Secret presence check ==="
-          python -c "
-import os
-key = os.getenv('OPENROUTER_API_KEY', '')
-print(f'OPENROUTER_API_KEY set: {bool(key)}')
-print(f'Length: {len(key)}')
-print(f'Starts with sk-or: {key.startswith(\"sk-or\")}')
-"
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "OPENROUTER_API_KEY: NOT SET (empty)"
+          else
+            echo "OPENROUTER_API_KEY: SET (length=${#OPENROUTER_API_KEY})"
+          fi
 
       - name: Run daily signal analysis
         env:

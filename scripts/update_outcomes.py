@@ -174,9 +174,12 @@ def resolve_signal(signal_row, df) -> dict:
         pips_moved = -abs(entry - sl) * 10000  # actual pips lost
     else:
         # Neither hit -- expired at max days
+        # Not a win or a loss -- TP/SL were never reached.
+        # signal_correct=None so analytics exclude it from win rate.
+        # pips_moved kept for reference (directional drift only).
         outcome_type = "expired"
         directionally_correct = (pips_moved > 0)
-        signal_correct = directionally_correct
+        signal_correct = None
 
     if resolution_date is None:
         resolution_date = df.index[-1].date() if hasattr(df.index[-1], "date") else date.today()

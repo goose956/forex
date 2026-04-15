@@ -140,7 +140,7 @@ def signals_to_df(signals, outcomes_map):
             "Claude":      s.claude_signal or "",
             "GPT":         s.gpt_signal   or "",
             "Agree":       "Yes" if s.providers_agree else "No",
-            "Outcome":     ("Win" if o.signal_correct else "Loss") if o else "Pending",
+            "Outcome":     (("Win" if o.signal_correct else ("Expired" if o.signal_correct is None else "Loss")) if o else "Pending"),
             "Pips":        float(o.pips_moved or 0) if o else None,
             "Trend":       s.trend_direction or "",
             "Above200MA":  "Yes" if s.above_200ma else "No",
@@ -390,7 +390,7 @@ def page_today(days, min_conf):
     # ---- Row 2: Key metrics (compact) ----
     df = signals_to_df(all_signals, outcomes_map)
     if not df.empty:
-        resolved   = df[df["Outcome"] != "Pending"]
+        resolved   = df[df["Outcome"].isin(["Win", "Loss"])]
         wins       = resolved[resolved["Outcome"] == "Win"]
         win_rate   = round(len(wins) / len(resolved) * 100, 1) if len(resolved) > 0 else 0
         total_pips = resolved["Pips"].sum() if "Pips" in resolved.columns else 0
@@ -490,7 +490,7 @@ def page_history(days, min_conf):
     with f1:
         sig_filter = st.selectbox("Signal", ["All", "BUY", "SELL", "HOLD"])
     with f2:
-        out_filter = st.selectbox("Outcome", ["All", "Win", "Loss", "Pending"])
+        out_filter = st.selectbox("Outcome", ["All", "Win", "Loss", "Expired", "Pending"])
     with f3:
         prov_filter = st.selectbox("Agreement", ["All", "Yes", "No"])
     with f4:
@@ -538,7 +538,7 @@ def page_history(days, min_conf):
             st.caption(f"Showing {shown} of {total_filtered} — increase rows to see more")
 
     for _, row in paged.iterrows():
-        outcome_icon = "✅" if row["Outcome"] == "Win" else ("❌" if row["Outcome"] == "Loss" else "⏳")
+        outcome_icon = "✅" if row["Outcome"] == "Win" else ("❌" if row["Outcome"] == "Loss" else ("⌛" if row["Outcome"] == "Expired" else "⏳"))
         label = (f"{row['Date']}  |  {row['Signal']}  |  Conf: {row['Conf']}/10  "
                  f"|  Agree: {row['Agree']}  |  {outcome_icon} {row['Outcome']}")
         if row.get("Pips") is not None:
@@ -587,7 +587,7 @@ def page_analytics(days, min_conf):
     signals      = load_signals(days=days)
     outcomes_map = load_outcomes()
     df           = signals_to_df(signals, outcomes_map)
-    resolved     = df[df["Outcome"] != "Pending"] if not df.empty else pd.DataFrame()
+    resolved     = df[df["Outcome"].isin(["Win", "Loss"])] if not df.empty else pd.DataFrame()
 
     if len(resolved) < 10:
         remaining = 10 - len(resolved)

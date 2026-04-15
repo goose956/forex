@@ -31,11 +31,8 @@ jobs:
         run: |
           echo "=== Git commit ==="
           git log --oneline -3
-          echo "=== quick_think_llm in forex_agents.py ==="
-          grep "quick_think_llm" tracker/agents/forex_agents.py
-          echo "=== TradingAgents version ==="
-          pip show tradingagents | grep -i "version\|location\|commit" || true
-          python -c "import tradingagents; import os; print('TradingAgents path:', os.path.dirname(tradingagents.__file__))"
+          echo "=== Model in forex_agents.py ==="
+          grep -E "ANTHROPIC_MODEL|OPENAI_MODEL" tracker/agents/forex_agents.py || true
 
       - name: Run daily signal analysis
         env:

@@ -410,6 +410,39 @@ def add_entry_strategy_columns():
                     pass
 
 
+def add_timeframe_columns():
+    """
+    Add multi-timeframe analysis columns to the signals table.
+    Stores weekly and 4H trend data alongside the daily signal.
+    All nullable -- safe to add to existing tables.
+    """
+    engine = get_engine()
+    tf_cols = [
+        ("weekly_trend",        "TEXT"),          # up / down / sideways
+        ("weekly_above_200ma",  "BOOLEAN"),
+        ("weekly_rsi",          "DECIMAL(6,2)"),
+        ("weekly_ma_alignment", "TEXT"),          # bullish / bearish / neutral
+        ("h4_trend",            "TEXT"),          # up / down / sideways
+        ("h4_above_50ma",       "BOOLEAN"),
+        ("h4_rsi",              "DECIMAL(6,2)"),
+        ("h4_ma_alignment",     "TEXT"),          # bullish / bearish / neutral
+        ("mtf_bias",            "TEXT"),          # BUY / SELL / NEUTRAL
+        ("mtf_aligned",         "BOOLEAN"),       # True if daily signal matches mtf_bias
+        ("mtf_notes",           "TEXT"),          # human-readable summary
+    ]
+    with engine.connect() as conn:
+        for col_name, col_type in tf_cols:
+            try:
+                conn.execute(text(f"ALTER TABLE signals ADD COLUMN {col_name} {col_type}"))
+                conn.commit()
+                log.info("Added column: signals.%s", col_name)
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+
 def add_ensemble_columns():
     """
     Add ensemble tracking columns to the signals table if they don't exist.
@@ -443,6 +476,7 @@ def create_tables():
     add_confluence_columns()
     add_ensemble_columns()
     add_entry_strategy_columns()
+    add_timeframe_columns()
     print("Database tables ready.")
 
 

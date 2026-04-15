@@ -198,7 +198,8 @@ def combine_signals(claude_result: dict, gpt_result: dict) -> dict:
 def save_signal(combined: dict, claude_r: dict, gpt_r: dict,
                 levels: dict, price_data: dict, analysis_date: date,
                 scorecard: dict = None, confluence_price_data: dict = None,
-                confluence_market_data: dict = None, entry_strategy: dict = None):
+                confluence_market_data: dict = None, entry_strategy: dict = None,
+                mtf_data: dict = None, mtf_aligned: bool = None):
     """Save the combined signal record to the database."""
     from tracker.database import get_session, Signal
     from sqlalchemy import text as sa_text
@@ -353,6 +354,40 @@ def save_signal(combined: dict, claude_r: dict, gpt_r: dict,
                 })
             except Exception as ee:
                 log.warning("Could not save entry strategy fields: %s", ee)
+
+        # Save MTF fields
+        if mtf_data and flushed_id:
+            try:
+                session.execute(sa_text("""
+                    UPDATE signals SET
+                        weekly_trend        = :weekly_trend,
+                        weekly_above_200ma  = :weekly_above_200ma,
+                        weekly_rsi          = :weekly_rsi,
+                        weekly_ma_alignment = :weekly_ma_alignment,
+                        h4_trend            = :h4_trend,
+                        h4_above_50ma       = :h4_above_50ma,
+                        h4_rsi              = :h4_rsi,
+                        h4_ma_alignment     = :h4_ma_alignment,
+                        mtf_bias            = :mtf_bias,
+                        mtf_aligned         = :mtf_aligned,
+                        mtf_notes           = :mtf_notes
+                    WHERE id = :signal_id
+                """), {
+                    "weekly_trend":        mtf_data.get("weekly_trend"),
+                    "weekly_above_200ma":  mtf_data.get("weekly_above_200ma"),
+                    "weekly_rsi":          mtf_data.get("weekly_rsi"),
+                    "weekly_ma_alignment": mtf_data.get("weekly_ma_alignment"),
+                    "h4_trend":            mtf_data.get("h4_trend"),
+                    "h4_above_50ma":       mtf_data.get("h4_above_50ma"),
+                    "h4_rsi":              mtf_data.get("h4_rsi"),
+                    "h4_ma_alignment":     mtf_data.get("h4_ma_alignment"),
+                    "mtf_bias":            mtf_data.get("mtf_bias"),
+                    "mtf_aligned":         mtf_aligned,
+                    "mtf_notes":           mtf_data.get("mtf_notes"),
+                    "signal_id":           flushed_id,
+                })
+            except Exception as me:
+                log.warning("Could not save MTF fields: %s", me)
 
         session.commit()
         signal_id = flushed_id
@@ -553,7 +588,7 @@ Dashboard: check your Streamlit app for full details.
 
 def print_terminal_summary(analysis_date, combined, levels, price_data,
                             claude_r, gpt_r, signal_id, run_cost, mtd_cost,
-                            entry_strategy=None):
+                            entry_strategy=None, mtf_data=None, mtf_aligned=False):
     """Print the clean terminal signal box."""
     signal = combined["signal"]
     conf   = combined["confidence"]
@@ -597,6 +632,14 @@ def print_terminal_summary(analysis_date, combined, levels, price_data,
     print(f"  Above 200MA:  {above}")
     print(f"  RSI:          {rsi:.1f}   MACD: {macd_dir}")
     print("-" * 50)
+    if mtf_data:
+        w_trend = (mtf_data.get("weekly_trend") or "unknown").upper()
+        h4_trend = (mtf_data.get("h4_trend") or "unknown").upper()
+        mtf_bias = mtf_data.get("mtf_bias", "NEUTRAL")
+        aligned_str = "YES -- paper trade placed" if mtf_aligned else "NO -- paper trade SKIPPED"
+        print(f"  Weekly trend: {w_trend}  |  4H trend: {h4_trend}")
+        print(f"  MTF bias:     {mtf_bias}  |  Aligned: {aligned_str}")
+        print("-" * 50)
     print(f"  Cost this run:    GBP {run_cost:.4f}")
     print(f"  Month to date:    GBP {mtd_cost:.4f}")
     print(f"  Signal ID:        {signal_id}")
@@ -632,6 +675,7 @@ def main():
     # --- Confluence: fetch technical data before AI analysis ---
     price_data_conf = None
     market_data_conf = None
+    mtf_data = None
     scorecard = None
     try:
         engine_c = ConfluenceEngine()
@@ -640,6 +684,14 @@ def main():
         log.info("Confluence data fetched OK")
     except Exception as e:
         log.error(f"Confluence data fetch failed (continuing without): {e}")
+
+    # --- Multi-timeframe analysis ---
+    try:
+        if engine_c:
+            mtf_data = engine_c.fetch_multi_timeframe()
+            log.info(f"MTF bias: {mtf_data.get('mtf_bias')} -- {mtf_data.get('mtf_notes')}")
+    except Exception as e:
+        log.error(f"MTF fetch failed (continuing without): {e}")
 
     # News risk assessment
     news_risk = None
@@ -685,6 +737,20 @@ def main():
             ctx['technical_context'] = tech_ctx
         elif isinstance(ctx, str):
             ctx = ctx + tech_ctx
+
+    # Inject MTF context
+    if mtf_data and isinstance(ctx, dict):
+        mtf_ctx = (
+            f"\nMULTI-TIMEFRAME CONTEXT:\n"
+            f"Weekly trend: {mtf_data.get('weekly_trend', 'unknown').upper()}"
+            f"  |  Weekly 200MA: {'ABOVE' if mtf_data.get('weekly_above_200ma') else 'BELOW'}"
+            f"  |  Weekly RSI: {mtf_data.get('weekly_rsi', 'N/A')}\n"
+            f"4H trend: {mtf_data.get('h4_trend', 'unknown').upper()}"
+            f"  |  4H 50MA: {'ABOVE' if mtf_data.get('h4_above_50ma') else 'BELOW'}"
+            f"  |  4H RSI: {mtf_data.get('h4_rsi', 'N/A')}\n"
+            f"MTF bias: {mtf_data.get('mtf_bias', 'NEUTRAL')}\n"
+        )
+        ctx['technical_context'] = ctx.get('technical_context', '') + mtf_ctx
 
     # --- Ensemble: run OpenRouter models (now ctx is fully built) ---
     try:
@@ -767,6 +833,21 @@ def main():
     except Exception as e:
         log.error(f"Entry strategy calculation failed (continuing): {e}")
 
+    # Determine MTF alignment with daily signal
+    mtf_aligned = False
+    if mtf_data:
+        mtf_bias = mtf_data.get("mtf_bias", "NEUTRAL")
+        daily_signal = combined["signal"]
+        mtf_aligned = (
+            (daily_signal == "BUY"  and mtf_bias == "BUY")  or
+            (daily_signal == "SELL" and mtf_bias == "SELL") or
+            (daily_signal == "HOLD")
+        )
+        if mtf_aligned:
+            log.info(f"MTF ALIGNED: daily={daily_signal} mtf={mtf_bias} -- confirmed signal")
+        else:
+            log.info(f"MTF CONFLICT: daily={daily_signal} vs mtf={mtf_bias} -- daily signal only, no paper trade")
+
     # Step 8: Save signal
     signal_id = save_signal(
         combined, claude_result, gpt_result, levels, price_data, analysis_date,
@@ -774,6 +855,8 @@ def main():
         confluence_price_data=price_data_conf,
         confluence_market_data=market_data_conf,
         entry_strategy=entry_strategy,
+        mtf_data=mtf_data,
+        mtf_aligned=mtf_aligned,
     )
 
     # Step 8b: Save ensemble model votes to database
@@ -820,8 +903,16 @@ def main():
         except Exception as e:
             log.error(f"Could not update ensemble fields: {e}")
 
-    # Step 8c: Open virtual paper trade
+    # Step 8c: Open virtual paper trade (only when MTF aligned or no MTF data)
     vtrade = None
+    mtf_skip_reason = None
+    if mtf_data and not mtf_aligned and combined["signal"] != "HOLD":
+        mtf_skip_reason = (
+            f"MTF conflict: daily={combined['signal']} vs MTF bias={mtf_data.get('mtf_bias')} "
+            f"({mtf_data.get('mtf_notes', '')})"
+        )
+        log.info(f"Paper trade SKIPPED -- {mtf_skip_reason}")
+
     try:
         from tracker.virtual_account import open_trade
         from tracker.database import get_session, initialise_virtual_account
@@ -829,7 +920,7 @@ def main():
         initialise_virtual_account(vsession)
         trade_signal = {
             "id":            signal_id,
-            "signal":        combined["signal"],
+            "signal":        combined["signal"] if not mtf_skip_reason else "HOLD",
             "entry_price":   levels.get("entry"),
             "stop_loss":     levels.get("stop_loss"),
             "take_profit":   levels.get("take_profit"),
@@ -864,7 +955,8 @@ def main():
     # Step 11: Print summary
     print_terminal_summary(analysis_date, combined, levels, price_data,
                            claude_result, gpt_result, signal_id, run_cost, mtd_cost,
-                           entry_strategy=entry_strategy)
+                           entry_strategy=entry_strategy,
+                           mtf_data=mtf_data, mtf_aligned=mtf_aligned)
 
     # Step 11b: Print ensemble vote breakdown
     if consensus.get("all_votes"):

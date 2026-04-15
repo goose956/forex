@@ -151,6 +151,11 @@ def signals_to_df(signals, outcomes_map):
             "bull_argument":      s.bull_argument or "",
             "bear_argument":      s.bear_argument or "",
             "risk_assessment":    s.risk_assessment or "",
+            "MTF Bias":    getattr(s, "mtf_bias",     None) or "",
+            "MTF Aligned": getattr(s, "mtf_aligned",  None),
+            "Weekly":      getattr(s, "weekly_trend",  None) or "",
+            "4H":          getattr(s, "h4_trend",      None) or "",
+            "MTF Notes":   getattr(s, "mtf_notes",     None) or "",
         })
     return pd.DataFrame(data)
 
@@ -340,6 +345,36 @@ def page_today(days, min_conf):
         except Exception:
             pass
 
+        # ---- Multi-timeframe alignment ----
+        try:
+            mtf_bias    = getattr(sig, "mtf_bias",    None)
+            mtf_aligned = getattr(sig, "mtf_aligned", None)
+            weekly_trend = getattr(sig, "weekly_trend", None)
+            h4_trend     = getattr(sig, "h4_trend",    None)
+            mtf_notes    = getattr(sig, "mtf_notes",   None)
+            if mtf_bias:
+                st.markdown("**Multi-Timeframe Analysis**")
+                mcols = st.columns(4)
+                mcols[0].metric("Weekly Trend", (weekly_trend or "N/A").upper())
+                mcols[1].metric("4H Trend",     (h4_trend    or "N/A").upper())
+                mcols[2].metric("MTF Bias",     mtf_bias or "N/A")
+                if mtf_aligned is not None:
+                    aligned_label = "Aligned" if mtf_aligned else "Conflict"
+                    aligned_color = "#1a7f37" if mtf_aligned else "#cf222e"
+                    mcols[3].markdown(
+                        f'<span style="font-size:1.1rem;font-weight:bold;color:{aligned_color}">'
+                        f'{aligned_label}</span>', unsafe_allow_html=True
+                    )
+                    if not mtf_aligned:
+                        st.warning(
+                            f"Daily signal ({sig.signal}) conflicts with MTF bias ({mtf_bias}). "
+                            f"Paper trade skipped — logged for analysis only."
+                        )
+                if mtf_notes:
+                    st.caption(f"MTF: {mtf_notes}")
+        except Exception:
+            pass
+
         # Primary reason expander
         if sig.primary_reason:
             with st.expander("View reasoning"):
@@ -451,7 +486,7 @@ def page_history(days, min_conf):
         return
 
     # Filters
-    f1, f2, f3, f4 = st.columns(4)
+    f1, f2, f3, f4, f5 = st.columns(5)
     with f1:
         sig_filter = st.selectbox("Signal", ["All", "BUY", "SELL", "HOLD"])
     with f2:
@@ -459,6 +494,8 @@ def page_history(days, min_conf):
     with f3:
         prov_filter = st.selectbox("Agreement", ["All", "Yes", "No"])
     with f4:
+        mtf_filter = st.selectbox("MTF Alignment", ["All", "Aligned", "Conflict", "No data"])
+    with f5:
         conf_filter = st.slider("Min confidence", 1, 10, min_conf, key="hist_conf")
 
     filtered = df.copy()
@@ -468,6 +505,12 @@ def page_history(days, min_conf):
         filtered = filtered[filtered["Outcome"] == out_filter]
     if prov_filter != "All":
         filtered = filtered[filtered["Agree"] == prov_filter]
+    if mtf_filter == "Aligned":
+        filtered = filtered[filtered["MTF Aligned"] == True]
+    elif mtf_filter == "Conflict":
+        filtered = filtered[filtered["MTF Aligned"] == False]
+    elif mtf_filter == "No data":
+        filtered = filtered[filtered["MTF Bias"] == ""]
     filtered = filtered[filtered["Conf"] >= conf_filter]
 
     st.caption(f"Showing {len(filtered)} of {len(df)} signals")
@@ -500,6 +543,9 @@ def page_history(days, min_conf):
                  f"|  Agree: {row['Agree']}  |  {outcome_icon} {row['Outcome']}")
         if row.get("Pips") is not None:
             label += f"  ({row['Pips']:+.0f} pips)"
+        if row.get("MTF Bias"):
+            mtf_tag = "MTF:Aligned" if row.get("MTF Aligned") else "MTF:Conflict"
+            label += f"  |  {mtf_tag}"
         with st.expander(label):
             c1, c2 = st.columns(2)
             with c1:
@@ -512,6 +558,9 @@ def page_history(days, min_conf):
                 st.write(f"**GPT-4o:** {row['GPT']}")
                 st.write(f"**Agree:** {row['Agree']}")
                 st.write(f"**Trend:** {row['Trend']}  Above 200MA: {row['Above200MA']}")
+                if row.get("MTF Bias"):
+                    aligned_txt = "Aligned" if row.get("MTF Aligned") else "Conflict"
+                    st.write(f"**MTF:** Weekly={row['Weekly'].upper() or 'N/A'}  4H={row['4H'].upper() or 'N/A'}  Bias={row['MTF Bias']}  ({aligned_txt})")
 
             if row.get("technical_summary"):
                 st.write("**Technical:**")

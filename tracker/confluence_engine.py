@@ -959,6 +959,178 @@ class ConfluenceEngine:
                 'expires_bars': 1,
             }
 
+    def fetch_multi_timeframe(self, pair: str = "GBPUSD=X") -> dict:
+        """
+        Fetch weekly and 4H trend data for multi-timeframe analysis.
+
+        Returns a dict with:
+            weekly_trend        : "up" / "down" / "sideways"
+            weekly_above_200ma  : bool
+            weekly_rsi          : float
+            weekly_ma_alignment : "bullish" / "bearish" / "neutral"
+            h4_trend            : "up" / "down" / "sideways"
+            h4_above_50ma       : bool
+            h4_rsi              : float
+            h4_ma_alignment     : "bullish" / "bearish" / "neutral"
+            mtf_bias            : "BUY" / "SELL" / "NEUTRAL"
+            mtf_notes           : str  (human-readable summary)
+        """
+        import warnings
+        warnings.filterwarnings("ignore")
+        result = {}
+
+        try:
+            import yfinance as yf
+            import numpy as np
+
+            # ---- Weekly ----
+            try:
+                wk = yf.download(pair, period="400wk", interval="1wk",
+                                 progress=False, auto_adjust=True)
+                if wk is not None and not wk.empty:
+                    import pandas as pd
+                    if isinstance(wk.columns, pd.MultiIndex):
+                        wk.columns = wk.columns.droplevel(1)
+                    wk = wk.dropna()
+                    closes = wk["Close"].values.astype(float)
+                    if len(closes) >= 50:
+                        price     = float(closes[-1])
+                        ma20      = float(np.mean(closes[-20:]))
+                        ma50      = float(np.mean(closes[-50:]))
+                        ma200     = float(np.mean(closes[-200:])) if len(closes) >= 200 else float(np.mean(closes))
+
+                        if price > ma20 and ma20 > ma50:
+                            w_trend = "up"
+                        elif price < ma20 and ma20 < ma50:
+                            w_trend = "down"
+                        else:
+                            w_trend = "sideways"
+
+                        w_above_200 = bool(price > ma200)
+
+                        diff = (ma20 - ma50) * 10000
+                        if diff > 10:
+                            w_ma_align = "bullish"
+                        elif diff < -10:
+                            w_ma_align = "bearish"
+                        else:
+                            w_ma_align = "neutral"
+
+                        # Weekly RSI (14)
+                        w_rsi = None
+                        if len(closes) >= 15:
+                            deltas = np.diff(closes[-15:])
+                            gains  = np.where(deltas > 0, deltas, 0)
+                            losses = np.where(deltas < 0, -deltas, 0)
+                            avg_g  = np.mean(gains[-14:])
+                            avg_l  = np.mean(losses[-14:])
+                            if avg_l > 0:
+                                rs    = avg_g / avg_l
+                                w_rsi = round(100 - 100 / (1 + rs), 1)
+
+                        result["weekly_trend"]       = w_trend
+                        result["weekly_above_200ma"] = w_above_200
+                        result["weekly_rsi"]         = w_rsi
+                        result["weekly_ma_alignment"] = w_ma_align
+                        log.info("Weekly trend: %s above_200=%s rsi=%s", w_trend, w_above_200, w_rsi)
+            except Exception as e:
+                log.warning("Weekly fetch failed: %s", e)
+
+            # ---- 4H ----
+            try:
+                h4 = yf.download(pair, period="60d", interval="4h",
+                                 progress=False, auto_adjust=True)
+                if h4 is not None and not h4.empty:
+                    import pandas as pd
+                    if isinstance(h4.columns, pd.MultiIndex):
+                        h4.columns = h4.columns.droplevel(1)
+                    h4 = h4.dropna()
+                    closes4 = h4["Close"].values.astype(float)
+                    if len(closes4) >= 20:
+                        price4   = float(closes4[-1])
+                        ma20_4h  = float(np.mean(closes4[-20:]))
+                        ma50_4h  = float(np.mean(closes4[-50:])) if len(closes4) >= 50 else float(np.mean(closes4))
+
+                        if price4 > ma20_4h and ma20_4h > ma50_4h:
+                            h4_trend = "up"
+                        elif price4 < ma20_4h and ma20_4h < ma50_4h:
+                            h4_trend = "down"
+                        else:
+                            h4_trend = "sideways"
+
+                        h4_above_50 = bool(price4 > ma50_4h)
+
+                        diff4 = (ma20_4h - ma50_4h) * 10000
+                        if diff4 > 5:
+                            h4_ma_align = "bullish"
+                        elif diff4 < -5:
+                            h4_ma_align = "bearish"
+                        else:
+                            h4_ma_align = "neutral"
+
+                        # 4H RSI (14)
+                        h4_rsi = None
+                        if len(closes4) >= 15:
+                            deltas4 = np.diff(closes4[-15:])
+                            gains4  = np.where(deltas4 > 0, deltas4, 0)
+                            losses4 = np.where(deltas4 < 0, -deltas4, 0)
+                            avg_g4  = np.mean(gains4[-14:])
+                            avg_l4  = np.mean(losses4[-14:])
+                            if avg_l4 > 0:
+                                rs4    = avg_g4 / avg_l4
+                                h4_rsi = round(100 - 100 / (1 + rs4), 1)
+
+                        result["h4_trend"]       = h4_trend
+                        result["h4_above_50ma"]  = h4_above_50
+                        result["h4_rsi"]         = h4_rsi
+                        result["h4_ma_alignment"] = h4_ma_align
+                        log.info("4H trend: %s above_50=%s rsi=%s", h4_trend, h4_above_50, h4_rsi)
+            except Exception as e:
+                log.warning("4H fetch failed: %s", e)
+
+        except Exception as e:
+            log.warning("fetch_multi_timeframe failed: %s", e)
+
+        # ---- Derive MTF bias ----
+        w_trend  = result.get("weekly_trend",  "sideways")
+        h4_trend = result.get("h4_trend",      "sideways")
+
+        bullish_count = sum([
+            w_trend  == "up",
+            h4_trend == "up",
+            result.get("weekly_ma_alignment") == "bullish",
+            result.get("h4_ma_alignment")     == "bullish",
+        ])
+        bearish_count = sum([
+            w_trend  == "down",
+            h4_trend == "down",
+            result.get("weekly_ma_alignment") == "bearish",
+            result.get("h4_ma_alignment")     == "bearish",
+        ])
+
+        if bullish_count >= 3:
+            mtf_bias = "BUY"
+        elif bearish_count >= 3:
+            mtf_bias = "SELL"
+        else:
+            mtf_bias = "NEUTRAL"
+
+        notes_parts = []
+        if result.get("weekly_trend"):
+            notes_parts.append(f"Weekly: {w_trend}")
+        if result.get("weekly_above_200ma") is not None:
+            notes_parts.append(f"{'above' if result['weekly_above_200ma'] else 'below'} weekly 200MA")
+        if result.get("h4_trend"):
+            notes_parts.append(f"4H: {h4_trend}")
+        if result.get("weekly_rsi"):
+            notes_parts.append(f"W-RSI {result['weekly_rsi']}")
+
+        result["mtf_bias"]  = mtf_bias
+        result["mtf_notes"] = " | ".join(notes_parts) if notes_parts else "No MTF data"
+
+        log.info("MTF bias: %s (%s)", mtf_bias, result["mtf_notes"])
+        return result
+
     def generate_summary(self, scorecard: dict, signal: str) -> str:
         """
         Generate a plain English summary (under 200 words).

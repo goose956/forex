@@ -261,6 +261,7 @@ def page_today(days, min_conf):
                     "WHERE signal_id = :sid ORDER BY confidence DESC"
                 ), _conn, params={"sid": sig.id})
             if not votes_df.empty:
+                from tracker.ensemble import OPENROUTER_WEIGHTS
                 st.markdown("**OpenRouter Model Votes**")
                 buy_c  = (votes_df["signal"] == "BUY").sum()
                 sell_c = (votes_df["signal"] == "SELL").sum()
@@ -269,11 +270,17 @@ def page_today(days, min_conf):
                 vcols[0].metric("BUY",  buy_c)
                 vcols[1].metric("SELL", sell_c)
                 vcols[2].metric("HOLD", hold_c)
-                # Individual vote table
                 display = votes_df.copy()
+                display["weight"] = display["model_name"].map(
+                    lambda m: OPENROUTER_WEIGHTS.get(m, 1.0)
+                )
                 display["model_name"] = display["model_name"].str.split("/").str[-1].str[:28]
-                display.columns = ["Model", "Vote", "Conf"]
-                st.dataframe(display, use_container_width=True, hide_index=True)
+                display = display.rename(columns={
+                    "model_name": "Model", "signal": "Vote",
+                    "confidence": "Conf",  "weight": "Weight"
+                })
+                st.dataframe(display[["Model","Vote","Conf","Weight"]],
+                             use_container_width=True, hide_index=True)
         except Exception:
             pass
 

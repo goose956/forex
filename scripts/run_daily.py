@@ -649,7 +649,7 @@ def main():
     # --- Ensemble: run OpenRouter models (uses pre-fetched confluence data) ---
     ensemble_votes = []
     try:
-        ensemble_votes = run_ensemble(price_data_conf, market_data_conf)
+        ensemble_votes = run_ensemble(price_data_conf, market_data_conf, context_data=ctx)
         if ensemble_votes:
             log.info(f"Ensemble: {len(ensemble_votes)} models voted")
     except Exception as e:

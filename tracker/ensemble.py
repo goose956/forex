@@ -1,13 +1,16 @@
 """
-tracker/ensemble.py -- Multi-model ensemble voting for forex signals.
+tracker/ensemble.py -- Multi-model ensemble voting with weighted consensus.
 
-Calls 7 cheap models via OpenRouter (OpenAI-compatible API).
-Each model gets the pre-calculated technical context and votes independently.
-Graceful failure -- if OpenRouter unavailable, returns empty list.
+9 models total (Claude + GPT + 7 OpenRouter).
+All models receive the same full context (technical, macro, news, calendar).
 
-Current models (9 total including Claude + GPT):
-  openrouter: llama-3.3-70b, deepseek-chat, qwen-2.5-72b, mistral-nemo,
-              gemini-2.0-flash, gemini-2.0-flash-lite, mistral-small-3.1
+Weighting tiers:
+  Claude sonnet-4-6          weight 3.0  -- primary, most capable
+  GPT-4o-mini                weight 2.0  -- solid secondary
+  Llama 70B, DeepSeek,
+  Qwen 72B, Gemini Flash     weight 1.0  -- large capable models
+  Mistral Nemo, Flash Lite,
+  Mistral Small              weight 0.5  -- smaller/lite models
 """
 
 import os
@@ -20,19 +23,37 @@ USD_TO_GBP = 0.79
 
 # OpenRouter model pricing (USD per 1M tokens, input/output)
 OPENROUTER_PRICING = {
-    "meta-llama/llama-3.3-70b-instruct":   (0.100, 0.100),  # Meta -- confirmed working
-    "deepseek/deepseek-chat":              (0.270, 1.100),  # DeepSeek -- confirmed working
-    "qwen/qwen-2.5-72b-instruct":          (0.180, 0.180),  # Alibaba -- confirmed working
-    "mistralai/mistral-nemo":              (0.035, 0.080),  # Mistral -- confirmed working
-    "google/gemini-2.0-flash-001":         (0.100, 0.400),  # Google Gemini 2.0 Flash
-    "google/gemini-2.0-flash-lite-001":    (0.075, 0.300),  # Google Gemini 2.0 Flash Lite
-    "mistralai/mistral-small-3.1-24b-instruct": (0.100, 0.300),  # Mistral Small 3.1
+    "meta-llama/llama-3.3-70b-instruct":        (0.100, 0.100),
+    "deepseek/deepseek-chat":                   (0.270, 1.100),
+    "qwen/qwen-2.5-72b-instruct":               (0.180, 0.180),
+    "mistralai/mistral-nemo":                   (0.035, 0.080),
+    "google/gemini-2.0-flash-001":              (0.100, 0.400),
+    "google/gemini-2.0-flash-lite-001":         (0.075, 0.300),
+    "mistralai/mistral-small-3.1-24b-instruct": (0.100, 0.300),
+}
+
+# Vote weights per model
+# Claude and GPT weights are applied in calculate_consensus()
+OPENROUTER_WEIGHTS = {
+    "meta-llama/llama-3.3-70b-instruct":        1.0,   # 70B -- full vote
+    "deepseek/deepseek-chat":                   1.0,   # strong reasoner -- full vote
+    "qwen/qwen-2.5-72b-instruct":               1.0,   # 72B -- full vote
+    "google/gemini-2.0-flash-001":              1.0,   # Gemini Flash -- full vote
+    "mistralai/mistral-nemo":                   0.5,   # smaller -- half vote
+    "google/gemini-2.0-flash-lite-001":         0.5,   # lite -- half vote
+    "mistralai/mistral-small-3.1-24b-instruct": 0.5,   # smaller -- half vote
+}
+
+MAIN_MODEL_WEIGHTS = {
+    "claude-sonnet-4-6": 3.0,
+    "gpt-4o-mini":       2.0,
 }
 
 OPENROUTER_MODELS = list(OPENROUTER_PRICING.keys())
 
-SYSTEM_PROMPT = """You are an expert forex analyst specialising in GBP/USD.
-You will be given technical and macro data for GBP/USD and must provide a trading signal.
+SYSTEM_PROMPT = """You are an expert forex analyst specialising in GBP/USD (British Pound / US Dollar).
+You have been given comprehensive technical, macro-economic and news data.
+Analyse all the information provided and give a trading signal.
 
 Respond with ONLY valid JSON in this exact format:
 {
@@ -49,36 +70,56 @@ Rules:
 
 
 def build_prompt(price_data, market_data, context_data=None):
-    """Build the analysis prompt from pre-calculated data."""
-    lines = ["Analyse GBP/USD and provide a trading signal for today.\n"]
+    """
+    Build the full context prompt -- same data Claude and GPT receive.
+    Technical indicators + macro data + news + economic calendar.
+    """
+    ctx  = context_data or {}
+    lines = ["Analyse GBP/USD and provide a trading signal.\n"]
 
+    # --- Technical data ---
     if price_data:
-        lines.append("TECHNICAL DATA:")
-        lines.append(f"Current price: {price_data.get('current_price', 'N/A'):.4f}")
-        lines.append(f"50 MA: {price_data.get('price_50ma', 0):.4f} | 200 MA: {price_data.get('price_200ma', 0):.4f}")
-        lines.append(f"Above 200MA: {price_data.get('above_200ma', False)}")
-        lines.append(f"MA alignment: {price_data.get('ma_alignment', 'N/A')}")
-        lines.append(f"Trend: {price_data.get('trend_direction', 'N/A')}")
-        lines.append(f"ADX: {price_data.get('adx_value', 0):.1f} ({price_data.get('trend_strength', 'N/A')})")
-        lines.append(f"RSI: {price_data.get('rsi_value', 0):.1f} ({price_data.get('rsi_condition', 'N/A')})")
-        lines.append(f"RSI divergence: {price_data.get('rsi_divergence', 'none')}")
-        lines.append(f"Nearest support: {price_data.get('nearest_support', 0):.4f} ({price_data.get('distance_to_support_pips', 0):.0f} pips)")
-        lines.append(f"Nearest resistance: {price_data.get('nearest_resistance', 0):.4f} ({price_data.get('distance_to_resistance_pips', 0):.0f} pips)")
-        lines.append(f"At key level: {price_data.get('at_key_level', False)} ({price_data.get('key_level_type', 'N/A')})")
+        lines.append("=== TECHNICAL DATA ===")
+        lines.append(f"Current price:      {price_data.get('current_price', 0):.5f}")
+        lines.append(f"50 MA:              {price_data.get('price_50ma', 0):.5f}")
+        lines.append(f"200 MA:             {price_data.get('price_200ma', 0):.5f}")
+        lines.append(f"Above 200MA:        {price_data.get('above_200ma', False)}")
+        lines.append(f"MA alignment:       {price_data.get('ma_alignment', 'N/A')}")
+        lines.append(f"Trend:              {price_data.get('trend_direction', 'N/A')}")
+        lines.append(f"ADX:                {price_data.get('adx_value', 0):.1f} ({price_data.get('trend_strength', 'N/A')})")
+        lines.append(f"RSI(14):            {price_data.get('rsi_value', 0):.1f} ({price_data.get('rsi_condition', 'N/A')})")
+        lines.append(f"RSI divergence:     {price_data.get('rsi_divergence', 'none')}")
+        lines.append(f"Nearest support:    {price_data.get('nearest_support', 0):.5f} ({price_data.get('distance_to_support_pips', 0):.0f} pips)")
+        lines.append(f"Nearest resistance: {price_data.get('nearest_resistance', 0):.5f} ({price_data.get('distance_to_resistance_pips', 0):.0f} pips)")
+        if price_data.get('at_key_level'):
+            lines.append(f"At key level:       {price_data.get('key_level_type', 'N/A')} at {price_data.get('key_level_price', 0):.5f}")
 
+    # --- Macro / market data ---
     if market_data:
-        lines.append("\nMACRO DATA:")
+        lines.append("\n=== MACRO DATA ===")
         if market_data.get('dxy_trend'):
-            lines.append(f"DXY (Dollar Index): {market_data.get('dxy_trend')} ({market_data.get('dxy_1day_change_pct', 0):.2f}% today, {market_data.get('dxy_vs_200ma', 'N/A')} 200MA)")
+            lines.append(f"DXY (Dollar Index): {market_data['dxy_trend']} ({market_data.get('dxy_1day_change_pct', 0):.2f}% today)")
         if market_data.get('yield_spread') is not None:
-            lines.append(f"UK/US 10yr yield spread: {market_data.get('yield_spread', 0):.3f}% ({market_data.get('spread_direction', 'N/A')})")
+            lines.append(f"UK/US yield spread: {market_data.get('yield_spread', 0):.3f}% ({market_data.get('spread_direction', 'N/A')})")
+        if market_data.get('us_10yr'):
+            lines.append(f"US 10yr yield:      {market_data['us_10yr']:.3f}%")
+        if market_data.get('uk_10yr'):
+            lines.append(f"UK 10yr yield:      {market_data['uk_10yr']:.3f}%")
 
-    if context_data and isinstance(context_data, dict) and context_data.get('news_headlines'):
-        lines.append("\nRECENT NEWS:")
-        for h in context_data.get('news_headlines', [])[:3]:
-            lines.append(f"- {h}")
+    # --- News and sentiment ---
+    news_text = ctx.get('news_text') or ctx.get('technical_context', '')
+    if news_text and len(str(news_text)) > 20:
+        lines.append("\n=== NEWS & SENTIMENT ===")
+        # Trim to avoid token bloat -- keep first 800 chars
+        lines.append(str(news_text)[:800])
 
-    lines.append("\nProvide your signal as JSON only.")
+    # --- Economic calendar ---
+    calendar_text = ctx.get('calendar_text', '')
+    if calendar_text and len(str(calendar_text)) > 20:
+        lines.append("\n=== ECONOMIC CALENDAR ===")
+        lines.append(str(calendar_text)[:400])
+
+    lines.append("\nRespond with JSON only.")
     return "\n".join(lines)
 
 
@@ -106,39 +147,38 @@ def call_model(model_name, prompt, api_key):
 
         content = response.choices[0].message.content.strip()
 
-        # Parse JSON response
         # Strip markdown code blocks if present
         if "```" in content:
             content = content.split("```")[1]
             if content.startswith("json"):
                 content = content[4:]
 
-        data = json.loads(content.strip())
-
-        signal = str(data.get("signal", "HOLD")).upper()
+        data       = json.loads(content.strip())
+        signal     = str(data.get("signal", "HOLD")).upper()
         if signal not in ("BUY", "SELL", "HOLD"):
             signal = "HOLD"
         confidence = max(1, min(10, int(data.get("confidence", 5))))
         reasoning  = str(data.get("reasoning", ""))[:300]
 
-        # Estimate cost
         in_tokens  = response.usage.prompt_tokens     if response.usage else 0
         out_tokens = response.usage.completion_tokens if response.usage else 0
         price_in, price_out = OPENROUTER_PRICING.get(model_name, (0.5, 1.5))
-        cost_usd = (in_tokens * price_in + out_tokens * price_out) / 1_000_000
-        cost_gbp = round(cost_usd * USD_TO_GBP, 6)
+        cost_usd   = (in_tokens * price_in + out_tokens * price_out) / 1_000_000
+        cost_gbp   = round(cost_usd * USD_TO_GBP, 6)
+        weight     = OPENROUTER_WEIGHTS.get(model_name, 1.0)
 
         return {
-            "model_name":  model_name,
-            "provider":    "openrouter",
-            "signal":      signal,
-            "confidence":  confidence,
-            "reasoning":   reasoning,
-            "cost_usd":    round(cost_usd, 6),
-            "cost_gbp":    cost_gbp,
-            "latency_ms":  latency_ms,
+            "model_name":    model_name,
+            "provider":      "openrouter",
+            "signal":        signal,
+            "confidence":    confidence,
+            "reasoning":     reasoning,
+            "cost_usd":      round(cost_usd, 6),
+            "cost_gbp":      cost_gbp,
+            "latency_ms":    latency_ms,
             "input_tokens":  in_tokens,
             "output_tokens": out_tokens,
+            "weight":        weight,
         }
 
     except Exception as e:
@@ -157,14 +197,15 @@ def run_ensemble(price_data, market_data, context_data=None):
         return []
 
     prompt = build_prompt(price_data, market_data, context_data)
+    log.info(f"Ensemble prompt: ~{len(prompt)//4} tokens")
     votes = []
 
     for model in OPENROUTER_MODELS:
-        log.info(f"Calling ensemble model: {model}")
+        log.info(f"Calling ensemble model: {model} (weight={OPENROUTER_WEIGHTS.get(model, 1.0)})")
         result = call_model(model, prompt, api_key)
         if result:
             votes.append(result)
-            log.info(f"  {model}: {result['signal']} {result['confidence']}/10")
+            log.info(f"  {model}: {result['signal']} {result['confidence']}/10  weight={result['weight']}")
         else:
             log.warning(f"  {model}: failed -- skipping")
 
@@ -173,24 +214,27 @@ def run_ensemble(price_data, market_data, context_data=None):
 
 def calculate_consensus(claude_result, gpt_result, ensemble_votes):
     """
-    Calculate consensus across all available models.
+    Weighted consensus across all models.
 
-    Returns dict with:
-    - final_signal: majority vote signal
-    - agreement_pct: % of models agreeing on final signal
-    - vote_count: total models that voted
-    - all_votes: list of (model, signal, confidence) for display
-    - providers_agree: True if all voted the same (backward compatible)
+    Weights:
+      Claude sonnet-4-6  = 3.0
+      GPT-4o-mini        = 2.0
+      OpenRouter Tier 1  = 1.0  (llama, deepseek, qwen, gemini-flash)
+      OpenRouter Tier 2  = 0.5  (mistral-nemo, flash-lite, mistral-small)
+
+    Returns:
+      final_signal, agreement_pct (weighted), vote_count, all_votes,
+      providers_agree, avg_confidence, signal_counts, weighted_scores
     """
     all_votes = []
 
-    # Add existing providers
     if claude_result and claude_result.get("signal"):
         all_votes.append({
             "model_name": "claude-sonnet-4-6",
             "provider":   "anthropic",
             "signal":     claude_result["signal"].upper(),
             "confidence": claude_result.get("confidence", 5),
+            "weight":     MAIN_MODEL_WEIGHTS["claude-sonnet-4-6"],
         })
 
     if gpt_result and gpt_result.get("signal"):
@@ -199,44 +243,64 @@ def calculate_consensus(claude_result, gpt_result, ensemble_votes):
             "provider":   "openai",
             "signal":     gpt_result["signal"].upper(),
             "confidence": gpt_result.get("confidence", 5),
+            "weight":     MAIN_MODEL_WEIGHTS["gpt-4o-mini"],
         })
 
-    # Add ensemble votes
     for v in ensemble_votes:
+        if "weight" not in v:
+            v["weight"] = OPENROUTER_WEIGHTS.get(v.get("model_name", ""), 1.0)
         all_votes.append(v)
 
     if not all_votes:
         return {
-            "final_signal": "HOLD",
-            "agreement_pct": 0,
-            "vote_count": 0,
-            "all_votes": [],
+            "final_signal":    "HOLD",
+            "agreement_pct":   0,
+            "vote_count":      0,
+            "all_votes":       [],
             "providers_agree": False,
+            "avg_confidence":  5,
+            "signal_counts":   {},
+            "weighted_scores": {},
         }
 
-    # Count votes per signal
+    # --- Weighted vote tally ---
+    weighted_scores = {"BUY": 0.0, "SELL": 0.0, "HOLD": 0.0}
+    total_weight    = 0.0
+
+    for v in all_votes:
+        w = float(v.get("weight", 1.0))
+        sig = v["signal"]
+        weighted_scores[sig] = weighted_scores.get(sig, 0.0) + w
+        total_weight += w
+
+    final_signal   = max(weighted_scores, key=weighted_scores.get)
+    winning_weight = weighted_scores[final_signal]
+    agreement_pct  = round(winning_weight / total_weight * 100, 1) if total_weight > 0 else 0
+
+    # Raw vote counts for display
     from collections import Counter
-    signal_counts = Counter(v["signal"] for v in all_votes)
+    raw_counts = Counter(v["signal"] for v in all_votes)
 
-    # Majority vote (weighted by confidence for tiebreaking)
-    final_signal = signal_counts.most_common(1)[0][0]
-    agreeing = signal_counts[final_signal]
-    total = len(all_votes)
-    agreement_pct = round(agreeing / total * 100, 1)
-
-    # Backward-compatible providers_agree (True if >= 60% agree)
     providers_agree = agreement_pct >= 60
 
-    # Combined confidence = avg confidence of models voting for final signal
-    agreeing_votes = [v for v in all_votes if v["signal"] == final_signal]
-    avg_confidence = round(sum(v["confidence"] for v in agreeing_votes) / len(agreeing_votes))
+    agreeing_votes  = [v for v in all_votes if v["signal"] == final_signal]
+    avg_confidence  = round(
+        sum(v["confidence"] * v.get("weight", 1.0) for v in agreeing_votes) /
+        sum(v.get("weight", 1.0) for v in agreeing_votes)
+    ) if agreeing_votes else 5
+
+    log.info(
+        f"Weighted consensus: {final_signal} ({agreement_pct}% weighted) "
+        f"scores={weighted_scores} total_weight={total_weight:.1f}"
+    )
 
     return {
         "final_signal":    final_signal,
         "agreement_pct":   agreement_pct,
-        "vote_count":      total,
+        "vote_count":      len(all_votes),
         "all_votes":       all_votes,
         "providers_agree": providers_agree,
         "avg_confidence":  avg_confidence,
-        "signal_counts":   dict(signal_counts),
+        "signal_counts":   dict(raw_counts),
+        "weighted_scores": {k: round(v, 2) for k, v in weighted_scores.items()},
     }

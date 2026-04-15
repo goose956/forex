@@ -172,7 +172,7 @@ def sidebar():
     st.sidebar.divider()
     db_status = "🟢 Railway Connected" if not is_sqlite() else "🟡 Using Local SQLite"
     st.sidebar.caption(db_status)
-    st.sidebar.caption(f"Last refreshed: {datetime.now().strftime('%H:%M:%S')}")
+    st.sidebar.caption(f"UTC: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}")
     if st.sidebar.button("Refresh Data"):
         st.cache_data.clear()
         st.rerun()
@@ -226,7 +226,16 @@ def page_today(days, min_conf):
 
         with col2:
             st.markdown("**Trade Levels**")
-            st.metric("Entry",       f"{float(sig.entry_price  or 0):.5f}")
+            # Show order type + smart entry price if available
+            try:
+                order_type   = getattr(sig, "order_type",        None) or "market"
+                smart_entry  = getattr(sig, "smart_entry_price", None)
+                entry_display = float(smart_entry) if smart_entry else float(sig.entry_price or 0)
+                entry_label  = f"Entry ({order_type.upper()})"
+            except Exception:
+                entry_display = float(sig.entry_price or 0)
+                entry_label   = "Entry"
+            st.metric(entry_label,   f"{entry_display:.5f}")
             st.metric("Stop Loss",   f"{float(sig.stop_loss    or 0):.5f}")
             st.metric("Take Profit", f"{float(sig.take_profit  or 0):.5f}")
             st.metric("Risk/Reward", f"1:{float(sig.risk_reward or 0):.1f}")
@@ -250,36 +259,83 @@ def page_today(days, min_conf):
             except Exception:
                 pass
 
-        # ---- OpenRouter model votes for today ----
+        # ---- Ensemble vote breakdown ----
         try:
-            import pandas as pd
             from sqlalchemy import text as sa_text
+            from tracker.ensemble import OPENROUTER_WEIGHTS, MAIN_MODEL_WEIGHTS
             eng = get_db()
             with eng.connect() as _conn:
                 votes_df = pd.read_sql(sa_text(
-                    "SELECT model_name, signal, confidence FROM model_votes "
+                    "SELECT model_name, provider, signal, confidence FROM model_votes "
                     "WHERE signal_id = :sid ORDER BY confidence DESC"
                 ), _conn, params={"sid": sig.id})
+
             if not votes_df.empty:
-                from tracker.ensemble import OPENROUTER_WEIGHTS
-                st.markdown("**OpenRouter Model Votes**")
-                buy_c  = (votes_df["signal"] == "BUY").sum()
-                sell_c = (votes_df["signal"] == "SELL").sum()
-                hold_c = (votes_df["signal"] == "HOLD").sum()
-                vcols = st.columns(3)
-                vcols[0].metric("BUY",  buy_c)
-                vcols[1].metric("SELL", sell_c)
-                vcols[2].metric("HOLD", hold_c)
-                display = votes_df.copy()
-                display["weight"] = display["model_name"].map(
-                    lambda m: OPENROUTER_WEIGHTS.get(m, 1.0)
-                )
-                display["model_name"] = display["model_name"].str.split("/").str[-1].str[:28]
-                display = display.rename(columns={
-                    "model_name": "Model", "signal": "Vote",
-                    "confidence": "Conf",  "weight": "Weight"
+                st.markdown("**Ensemble Votes**")
+
+                # Build full vote list including Claude + GPT from signal record
+                all_votes = []
+                all_votes.append({
+                    "model": "claude-sonnet-4-6", "signal": sig.claude_signal or "HOLD",
+                    "confidence": sig.claude_confidence or 5,
+                    "weight": MAIN_MODEL_WEIGHTS.get("claude-sonnet-4-6", 3.0),
                 })
-                st.dataframe(display[["Model","Vote","Conf","Weight"]],
+                all_votes.append({
+                    "model": "gpt-4o", "signal": sig.gpt_signal or "HOLD",
+                    "confidence": sig.gpt_confidence or 5,
+                    "weight": MAIN_MODEL_WEIGHTS.get("gpt-4o", 2.0),
+                })
+                for _, vr in votes_df.iterrows():
+                    all_votes.append({
+                        "model": vr["model_name"],
+                        "signal": vr["signal"],
+                        "confidence": vr["confidence"],
+                        "weight": OPENROUTER_WEIGHTS.get(vr["model_name"], 1.0),
+                    })
+
+                # Weighted totals per direction
+                totals = {"BUY": 0.0, "SELL": 0.0, "HOLD": 0.0}
+                total_w = 0.0
+                for v in all_votes:
+                    s = v["signal"] or "HOLD"
+                    if s in totals:
+                        totals[s] += v["weight"]
+                        total_w   += v["weight"]
+
+                # Horizontal weighted bar chart
+                fig_votes = go.Figure()
+                colors = {"BUY": "#1a7f37", "SELL": "#cf222e", "HOLD": "#6e7781"}
+                for direction in ["BUY", "SELL", "HOLD"]:
+                    w = totals[direction]
+                    pct = round(w / total_w * 100, 1) if total_w > 0 else 0
+                    fig_votes.add_trace(go.Bar(
+                        name=direction,
+                        x=[w],
+                        y=["Votes"],
+                        orientation="h",
+                        marker_color=colors[direction],
+                        text=f"{direction} {pct:.0f}%",
+                        textposition="inside",
+                        insidetextanchor="middle",
+                        hovertemplate=f"{direction}: {w:.1f} weighted votes ({pct}%)<extra></extra>",
+                    ))
+                fig_votes.update_layout(
+                    barmode="stack",
+                    height=70,
+                    margin=dict(l=0, r=0, t=0, b=0),
+                    showlegend=False,
+                    xaxis=dict(visible=False),
+                    yaxis=dict(visible=False),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_votes, use_container_width=True, config={"displayModeBar": False})
+
+                # Detail table
+                detail = pd.DataFrame(all_votes)
+                detail["model"] = detail["model"].str.split("/").str[-1].str[:28]
+                detail = detail.rename(columns={"model": "Model", "signal": "Vote", "confidence": "Conf", "weight": "Weight"})
+                st.dataframe(detail[["Model","Vote","Conf","Weight"]],
                              use_container_width=True, hide_index=True)
         except Exception:
             pass
@@ -426,7 +482,19 @@ def page_history(days, min_conf):
     display_cols = ["Date","Signal","Conf","Entry","SL","TP","R:R","Claude","GPT","Agree","Outcome","Pips"]
     available    = [c for c in display_cols if c in filtered.columns]
 
-    for _, row in filtered.head(50).iterrows():
+    total_filtered = len(filtered)
+    pg_col1, pg_col2 = st.columns([3, 1])
+    with pg_col1:
+        st.caption(f"{total_filtered} signal{'s' if total_filtered != 1 else ''} match filters")
+    with pg_col2:
+        page_size = st.selectbox("Rows", [25, 50, 100, "All"], index=1, key="hist_page_size")
+    paged = filtered if page_size == "All" else filtered.head(int(page_size))
+    if total_filtered > (0 if page_size == "All" else int(page_size)):
+        shown = total_filtered if page_size == "All" else int(page_size)
+        if shown < total_filtered:
+            st.caption(f"Showing {shown} of {total_filtered} — increase rows to see more")
+
+    for _, row in paged.iterrows():
         outcome_icon = "✅" if row["Outcome"] == "Win" else ("❌" if row["Outcome"] == "Loss" else "⏳")
         label = (f"{row['Date']}  |  {row['Signal']}  |  Conf: {row['Conf']}/10  "
                  f"|  Agree: {row['Agree']}  |  {outcome_icon} {row['Outcome']}")
@@ -645,7 +713,7 @@ def page_analytics(days, min_conf):
             )
             fig_prov.add_hline(y=50, line_dash="dash", line_color="#9e9e9e", annotation_text="50% baseline")
             fig_prov.update_traces(texttemplate='%{text} signals', textposition='outside')
-            fig_prov.update_layout(paper_bgcolor="white", plot_bgcolor="#f8f9fa",
+            fig_prov.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#f8f9fa",
                                    font=dict(color="#1a1a1a"), showlegend=False)
             st.plotly_chart(fig_prov, use_container_width=True)
 
@@ -1079,6 +1147,7 @@ def page_confluence():
         ), {'d': today}).fetchone()
 
     # If today has no confluence data, try yesterday
+    _showing_stale = False
     if not row or not (row._mapping.get('confluence_grade')):
         yesterday = (date.today() - timedelta(days=1)).isoformat()
         with engine.connect() as conn:
@@ -1086,10 +1155,13 @@ def page_confluence():
             row = conn.execute(text(
                 "SELECT * FROM signals WHERE analysis_date = :d ORDER BY id DESC LIMIT 1"
             ), {'d': yesterday}).fetchone()
+        _showing_stale = True
 
     if not row or not (row._mapping.get('confluence_grade')):
         st.info("Today's confluence data will appear after the morning analysis runs.")
     else:
+        if _showing_stale:
+            st.warning("No signal for today yet — showing yesterday's confluence data.")
         mapping = row._mapping
         grade = mapping.get('confluence_grade') or 'N/A'
         pct = mapping.get('confluence_pct') or 0
@@ -1429,12 +1501,31 @@ def page_account():
     best_trade  = resolved["net_pnl_gbp"].astype(float).max() if not resolved.empty else 0.0
     worst_trade = resolved["net_pnl_gbp"].astype(float).min() if not resolved.empty else 0.0
 
+    # Profit factor
+    gross_wins   = won["net_pnl_gbp"].astype(float).sum()   if not won.empty      else 0.0
+    gross_losses = abs(lost_exp["net_pnl_gbp"].astype(float).sum()) if not lost_exp.empty else 0.0
+    profit_factor = round(gross_wins / gross_losses, 2) if gross_losses > 0 else float("inf")
+
+    # Consecutive win/loss streak
+    max_win_streak = max_loss_streak = cur_win = cur_loss = 0
+    if not resolved.empty:
+        for status in resolved.sort_values("opened_at")["status"]:
+            if status == "won":
+                cur_win  += 1; cur_loss = 0
+            else:
+                cur_loss += 1; cur_win  = 0
+            max_win_streak  = max(max_win_streak,  cur_win)
+            max_loss_streak = max(max_loss_streak, cur_loss)
+
     with c2:
         st.write(f"**Total gross P&L:** GBP {total_gross:+.2f}")
         st.write(f"**Total spread costs paid:** GBP {total_spread:.2f}")
         st.write(f"**Total net P&L:** GBP {total_net:+.2f}")
         st.write(f"**Best trade:** GBP {best_trade:+.2f}")
         st.write(f"**Worst trade:** GBP {worst_trade:+.2f}")
+        pf_str = f"{profit_factor:.2f}" if profit_factor != float("inf") else "∞"
+        st.write(f"**Profit factor:** {pf_str}  *(>1.5 = good)*")
+        st.write(f"**Max win streak:** {max_win_streak}  |  **Max loss streak:** {max_loss_streak}")
 
     st.divider()
 

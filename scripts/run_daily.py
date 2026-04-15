@@ -738,7 +738,9 @@ def main():
         elif isinstance(ctx, str):
             ctx = ctx + tech_ctx
 
-    # Inject MTF context
+    # Inject MTF context -- raw data only, no derived bias label
+    # Giving models the pre-computed bias would anchor their reasoning and
+    # correlate all 9 votes. Let them form independent views from raw data.
     if mtf_data and isinstance(ctx, dict):
         mtf_ctx = (
             f"\nMULTI-TIMEFRAME CONTEXT:\n"
@@ -748,7 +750,6 @@ def main():
             f"4H trend: {mtf_data.get('h4_trend', 'unknown').upper()}"
             f"  |  4H 50MA: {'ABOVE' if mtf_data.get('h4_above_50ma') else 'BELOW'}"
             f"  |  4H RSI: {mtf_data.get('h4_rsi', 'N/A')}\n"
-            f"MTF bias: {mtf_data.get('mtf_bias', 'NEUTRAL')}\n"
         )
         ctx['technical_context'] = ctx.get('technical_context', '') + mtf_ctx
 

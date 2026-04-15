@@ -28,11 +28,21 @@ jobs:
           pip install --no-cache-dir -r requirements.txt
 
       - name: Debug -- verify checkout and model config
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           echo "=== Git commit ==="
           git log --oneline -3
           echo "=== Model in forex_agents.py ==="
           grep -E "ANTHROPIC_MODEL|OPENAI_MODEL" tracker/agents/forex_agents.py || true
+          echo "=== Secret presence check ==="
+          python -c "
+import os
+key = os.getenv('OPENROUTER_API_KEY', '')
+print(f'OPENROUTER_API_KEY set: {bool(key)}')
+print(f'Length: {len(key)}')
+print(f'Starts with sk-or: {key.startswith(\"sk-or\")}')
+"
 
       - name: Run daily signal analysis
         env:

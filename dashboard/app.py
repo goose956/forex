@@ -254,7 +254,7 @@ def page_today(days, min_conf):
         try:
             import pandas as pd
             from sqlalchemy import text as sa_text
-            eng = get_engine()
+            eng = get_db()
             with eng.connect() as _conn:
                 votes_df = pd.read_sql(sa_text(
                     "SELECT model_name, signal, confidence FROM model_votes "

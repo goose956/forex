@@ -738,20 +738,11 @@ def main():
         elif isinstance(ctx, str):
             ctx = ctx + tech_ctx
 
-    # Inject MTF context -- raw data only, no derived bias label
-    # Giving models the pre-computed bias would anchor their reasoning and
-    # correlate all 9 votes. Let them form independent views from raw data.
-    if mtf_data and isinstance(ctx, dict):
-        mtf_ctx = (
-            f"\nMULTI-TIMEFRAME CONTEXT:\n"
-            f"Weekly trend: {mtf_data.get('weekly_trend', 'unknown').upper()}"
-            f"  |  Weekly 200MA: {'ABOVE' if mtf_data.get('weekly_above_200ma') else 'BELOW'}"
-            f"  |  Weekly RSI: {mtf_data.get('weekly_rsi', 'N/A')}\n"
-            f"4H trend: {mtf_data.get('h4_trend', 'unknown').upper()}"
-            f"  |  4H 50MA: {'ABOVE' if mtf_data.get('h4_above_50ma') else 'BELOW'}"
-            f"  |  4H RSI: {mtf_data.get('h4_rsi', 'N/A')}\n"
-        )
-        ctx['technical_context'] = ctx.get('technical_context', '') + mtf_ctx
+    # MTF data is intentionally NOT injected into the agent prompts.
+    # Telling models "weekly trend: UP" anchors their daily analysis toward BUY
+    # just as effectively as sending the derived bias label directly.
+    # Models form independent views from daily data only.
+    # MTF is used by the system as a post-consensus filter to gate paper trades.
 
     # --- Ensemble: run OpenRouter models (now ctx is fully built) ---
     try:

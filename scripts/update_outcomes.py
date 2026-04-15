@@ -204,6 +204,20 @@ def main():
     from tracker.database import get_session, Signal, Outcome
 
     session = get_session()
+
+    # Step 1: Check if any pending limit/stop orders filled today
+    try:
+        from tracker.virtual_account import fill_pending_entries
+        filled, cancelled = fill_pending_entries(session)
+        if filled or cancelled:
+            log.info("Limit orders: %d filled, %d cancelled today", filled, cancelled)
+            if filled:
+                print(f"  Limit orders filled today: {filled}")
+            if cancelled:
+                print(f"  Limit orders cancelled (unfilled, expired): {cancelled}")
+    except Exception as e:
+        log.error("fill_pending_entries failed (non-critical): %s", e)
+
     try:
         # Find ALL unresolved signals that are at least 1 trading day old
         yesterday = date.today() - timedelta(days=1)

@@ -236,8 +236,14 @@ class VirtualTrade(Base):
     spread_pips         = Column(Numeric(5, 2), default=1.5)
     spread_cost_gbp     = Column(Numeric(10, 4))
 
-    status              = Column(Text, default="open")  # open / won / lost / expired / skipped
-    outcome_type        = Column(Text, nullable=True)   # tp_hit / sl_hit / expired
+    order_type          = Column(Text, nullable=True)    # market / limit / stop
+    limit_price         = Column(Numeric(10, 5), nullable=True)  # target fill price for limit/stop
+    expires_bars        = Column(Integer, nullable=True)  # cancel unfilled order after N days
+    filled_at           = Column(Date, nullable=True)     # date limit/stop order was filled
+    fill_price          = Column(Numeric(10, 5), nullable=True)  # actual fill price
+
+    status              = Column(Text, default="open")  # pending_entry / open / won / lost / expired / skipped / cancelled
+    outcome_type        = Column(Text, nullable=True)   # tp_hit / sl_hit / expired / cancelled
     pips_result         = Column(Numeric(8, 1), nullable=True)
     gross_pnl_gbp       = Column(Numeric(10, 4), nullable=True)
     net_pnl_gbp         = Column(Numeric(10, 4), nullable=True)  # after spread
@@ -410,6 +416,32 @@ def add_entry_strategy_columns():
                     pass
 
 
+def add_pending_entry_columns():
+    """
+    Add limit order tracking columns to virtual_trades.
+    All nullable -- safe to add to existing tables.
+    """
+    engine = get_engine()
+    cols = [
+        ("order_type",   "TEXT"),
+        ("limit_price",  "DECIMAL(10,5)"),
+        ("expires_bars", "INTEGER"),
+        ("filled_at",    "DATE"),
+        ("fill_price",   "DECIMAL(10,5)"),
+    ]
+    with engine.connect() as conn:
+        for col_name, col_type in cols:
+            try:
+                conn.execute(text(f"ALTER TABLE virtual_trades ADD COLUMN {col_name} {col_type}"))
+                conn.commit()
+                log.info("Added column: virtual_trades.%s", col_name)
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+
 def add_timeframe_columns():
     """
     Add multi-timeframe analysis columns to the signals table.
@@ -477,6 +509,7 @@ def create_tables():
     add_ensemble_columns()
     add_entry_strategy_columns()
     add_timeframe_columns()
+    add_pending_entry_columns()
     print("Database tables ready.")
 
 

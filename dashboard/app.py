@@ -1415,11 +1415,13 @@ def page_account():
     ret_pct   = round((balance - STARTING) / STARTING * 100, 2)
 
     # Split real trades (B+) from shadow trades (C grade)
-    real_trades   = df_trades[~df_trades["status"].str.startswith("shadow", na=False) & (~df_trades["status"].isin(["skipped", "skipped_conflict"]))]
-    shadow_trades = df_trades[df_trades["status"].str.startswith("shadow", na=False)]
+    real_trades    = df_trades[~df_trades["status"].str.startswith("shadow", na=False) & (~df_trades["status"].isin(["skipped", "skipped_conflict"]))]
+    shadow_trades  = df_trades[df_trades["status"].str.startswith("shadow", na=False)]
     conflict_skips = df_trades[df_trades["status"] == "skipped_conflict"]
-    closed_trades = real_trades[real_trades["status"].isin(["won", "lost", "expired"])]
-    open_trades   = real_trades[real_trades["status"] == "open"]
+    pending_trades = real_trades[real_trades["status"] == "pending_entry"]
+    cancelled_trades = real_trades[real_trades["status"] == "cancelled"]
+    closed_trades  = real_trades[real_trades["status"].isin(["won", "lost", "expired"])]
+    open_trades    = real_trades[real_trades["status"] == "open"]
 
     # Max drawdown
     max_dd = 0.0
@@ -1440,12 +1442,16 @@ def page_account():
         f"GBP {balance:,.2f}",
         delta=f"{'+' if delta_gbp >= 0 else ''}{delta_gbp:.2f} GBP",
     )
-    m2.metric(
-        "Total Return",
-        f"{'+' if ret_pct >= 0 else ''}{ret_pct:.2f}%",
-    )
-    m3.metric("Open Trades", len(open_trades))
+    m2.metric("Total Return", f"{'+' if ret_pct >= 0 else ''}{ret_pct:.2f}%")
+    m3.metric("Open Trades",  len(open_trades),    delta=f"{len(pending_trades)} awaiting fill" if len(pending_trades) else None)
     m4.metric("Max Drawdown", f"{max_dd:.1f}%")
+
+    # Fill rate banner
+    total_limit_orders = len(open_trades) + len(closed_trades) + len(cancelled_trades) + len(pending_trades)
+    total_filled = len(open_trades) + len(closed_trades)
+    if total_limit_orders > 0:
+        fill_rate = round(total_filled / total_limit_orders * 100, 0)
+        st.caption(f"Limit order fill rate: {total_filled}/{total_limit_orders} ({fill_rate:.0f}%) — {len(cancelled_trades)} cancelled unfilled")
 
     st.divider()
 
@@ -1588,8 +1594,10 @@ def page_account():
     for col, label in [
         ("opened_at",       "Date"),
         ("direction",       "Direction"),
+        ("order_type",      "Order"),
         ("confluence_grade","Grade"),
         ("entry_price",     "Entry"),
+        ("fill_price",      "Fill"),
         ("sl_pips",         "SL Pips"),
         ("tp_pips",         "TP Pips"),
         ("risk_gbp",        "Risk GBP"),
@@ -1614,10 +1622,14 @@ def page_account():
         status = str(row.get("Result", "")).lower()
         if status == "won":
             return ["background-color: #d4edda"] * len(row)
-        if status in ("lost",):
+        if status == "lost":
             return ["background-color: #f8d7da"] * len(row)
         if status == "open":
             return ["background-color: #fff3cd"] * len(row)
+        if status == "pending_entry":
+            return ["background-color: #cce5ff"] * len(row)   # blue -- awaiting fill
+        if status == "cancelled":
+            return ["background-color: #f5f5f5"] * len(row)   # grey -- unfilled
         return ["background-color: #e9ecef"] * len(row)
 
     try:

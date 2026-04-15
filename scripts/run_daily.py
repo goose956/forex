@@ -920,11 +920,18 @@ def main():
             "ai_confidence": combined["confidence"],
             "providers_agree": combined["providers_agree"],
         }
+        ot           = entry_strategy.get("order_type", "market") if entry_strategy else "market"
+        lim_price    = entry_strategy.get("entry_price")          if entry_strategy else None
+        exp_bars     = entry_strategy.get("expires_bars", 1)      if entry_strategy else 1
+
         vtrade = open_trade(
             vsession,
             trade_signal,
             confluence_grade=scorecard["grade"] if scorecard else None,
             risk_pct=scorecard["position_size_pct"] if scorecard else None,
+            order_type=ot,
+            limit_price=lim_price,
+            expires_bars=exp_bars,
         )
         if vtrade:
             log.info(

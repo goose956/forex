@@ -416,6 +416,31 @@ def add_entry_strategy_columns():
                     pass
 
 
+def add_news_columns():
+    """
+    Add news risk tracking columns to the signals table.
+    Stores the news risk level and event names for each signal date.
+    All nullable -- safe to add to existing tables.
+    """
+    engine = get_engine()
+    news_cols = [
+        ("news_risk_level",    "TEXT"),     # binary / high / medium / low / clear
+        ("news_event_names",   "TEXT"),     # comma-separated event titles
+        ("news_trade_blocked", "BOOLEAN"),  # True if paper trade was blocked by news
+    ]
+    with engine.connect() as conn:
+        for col_name, col_type in news_cols:
+            try:
+                conn.execute(text(f"ALTER TABLE signals ADD COLUMN {col_name} {col_type}"))
+                conn.commit()
+                log.info("Added column: signals.%s", col_name)
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+
 def add_pending_entry_columns():
     """
     Add limit order tracking columns to virtual_trades.
@@ -510,6 +535,7 @@ def create_tables():
     add_entry_strategy_columns()
     add_timeframe_columns()
     add_pending_entry_columns()
+    add_news_columns()
     print("Database tables ready.")
 
 

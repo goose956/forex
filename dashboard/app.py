@@ -156,6 +156,9 @@ def signals_to_df(signals, outcomes_map):
             "Weekly":      getattr(s, "weekly_trend",  None) or "",
             "4H":          getattr(s, "h4_trend",      None) or "",
             "MTF Notes":   getattr(s, "mtf_notes",     None) or "",
+            "News Risk":   getattr(s, "news_risk_level",    None) or "",
+            "News Events": getattr(s, "news_event_names",   None) or "",
+            "News Blocked": getattr(s, "news_trade_blocked", None),
         })
     return pd.DataFrame(data)
 
@@ -190,6 +193,53 @@ def sidebar():
 def page_today(days, min_conf):
     st.title("Today's Signal")
 
+    # ---- Live news risk banner (always shown, regardless of signal) ----
+    try:
+        from tracker.news_calendar import assess_news_risk
+        news_risk = assess_news_risk()
+        rl = news_risk.get("risk_level", "clear")
+
+        if rl in ("binary", "high"):
+            events = news_risk.get("high_impact_today", [])
+            event_names = " | ".join(e.get("title", "Unknown event") for e in events[:4])
+            icon = "BINARY EVENT" if rl == "binary" else "HIGH IMPACT NEWS"
+            st.markdown(f"""
+<div style="background:#9a0000;color:#fff;padding:22px 24px;border-radius:10px;
+            text-align:center;margin-bottom:18px;border:2px solid #ff0000">
+  <div style="font-size:1.6rem;font-weight:bold;letter-spacing:0.05em">
+    🚫 DO NOT TRADE TODAY — {icon}
+  </div>
+  <div style="font-size:1.05rem;margin-top:8px;opacity:0.92">{event_names}</div>
+  <div style="font-size:0.9rem;margin-top:8px;opacity:0.75">
+    Signal tracked for data purposes only. Paper trade blocked automatically.
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+        elif rl == "medium":
+            events = news_risk.get("high_impact_today", [])
+            event_names = " | ".join(e.get("title", "") for e in events[:3])
+            st.markdown(f"""
+<div style="background:#7a4800;color:#fff;padding:16px 20px;border-radius:8px;
+            text-align:center;margin-bottom:14px">
+  <div style="font-size:1.2rem;font-weight:bold">
+    ⚠️ CAUTION — Medium News Risk Today
+  </div>
+  <div style="font-size:0.95rem;margin-top:6px;opacity:0.9">{event_names}</div>
+  <div style="font-size:0.85rem;margin-top:6px;opacity:0.75">
+    Trade at reduced size if taking this signal.
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+        elif rl == "low":
+            tomorrow_events = news_risk.get("high_impact_tomorrow", [])
+            t_names = " | ".join(e.get("title", "") for e in tomorrow_events[:3])
+            st.info(f"Advisory: High-impact news tomorrow — {t_names}. Consider closing any open positions today.")
+
+    except Exception:
+        pass  # Don't block the page if calendar is unavailable
+
     signals      = load_signals(days=1)
     all_signals  = load_signals(days=days)
     outcomes_map = load_outcomes()
@@ -205,6 +255,16 @@ def page_today(days, min_conf):
         with col1:
             css_class = f"signal-{(sig.signal or 'hold').lower()}"
             st.markdown(f'<div class="{css_class}" style="font-size:2.5rem;font-weight:bold">{sig.signal or "HOLD"}</div>', unsafe_allow_html=True)
+            # Show news-blocked badge if applicable
+            try:
+                _news_blocked = getattr(sig, "news_trade_blocked", None)
+                _news_rl      = getattr(sig, "news_risk_level", None) or ""
+                if _news_blocked:
+                    st.markdown('<span style="background:#9a0000;color:#fff;padding:3px 10px;border-radius:4px;font-size:0.85rem;font-weight:bold">NO TRADE — NEWS</span>', unsafe_allow_html=True)
+                elif _news_rl == "medium":
+                    st.markdown('<span style="background:#7a4800;color:#fff;padding:3px 10px;border-radius:4px;font-size:0.85rem">CAUTION — NEWS</span>', unsafe_allow_html=True)
+            except Exception:
+                pass
             st.metric("Confidence", f"{sig.confidence or 0}/10")
             # providers_agree = ensemble-wide majority (>=60% of all models)
             try:
@@ -546,6 +606,10 @@ def page_history(days, min_conf):
         if row.get("MTF Bias"):
             mtf_tag = "MTF:Aligned" if row.get("MTF Aligned") else "MTF:Conflict"
             label += f"  |  {mtf_tag}"
+        if row.get("News Risk") in ("binary", "high"):
+            label += "  |  NEWS:Blocked"
+        elif row.get("News Risk") == "medium":
+            label += "  |  NEWS:Caution"
         with st.expander(label):
             c1, c2 = st.columns(2)
             with c1:
@@ -561,6 +625,11 @@ def page_history(days, min_conf):
                 if row.get("MTF Bias"):
                     aligned_txt = "Aligned" if row.get("MTF Aligned") else "Conflict"
                     st.write(f"**MTF:** Weekly={row['Weekly'].upper() or 'N/A'}  4H={row['4H'].upper() or 'N/A'}  Bias={row['MTF Bias']}  ({aligned_txt})")
+                if row.get("News Risk") and row.get("News Risk") != "clear":
+                    blocked_txt = "YES — trade blocked" if row.get("News Blocked") else "No"
+                    st.write(f"**News Risk:** {row['News Risk'].upper()}  |  Blocked: {blocked_txt}")
+                    if row.get("News Events"):
+                        st.caption(f"Events: {row['News Events']}")
 
             if row.get("technical_summary"):
                 st.write("**Technical:**")

@@ -199,7 +199,8 @@ def save_signal(combined: dict, claude_r: dict, gpt_r: dict,
                 levels: dict, price_data: dict, analysis_date: date,
                 scorecard: dict = None, confluence_price_data: dict = None,
                 confluence_market_data: dict = None, entry_strategy: dict = None,
-                mtf_data: dict = None, mtf_aligned: bool = None):
+                mtf_data: dict = None, mtf_aligned: bool = None,
+                news_risk: dict = None, news_trade_blocked: bool = False):
     """Save the combined signal record to the database."""
     from tracker.database import get_session, Signal
     from sqlalchemy import text as sa_text
@@ -388,6 +389,30 @@ def save_signal(combined: dict, claude_r: dict, gpt_r: dict,
                 })
             except Exception as me:
                 log.warning("Could not save MTF fields: %s", me)
+
+        # Save news risk fields
+        if flushed_id:
+            try:
+                event_names = ""
+                rl = ""
+                if news_risk:
+                    rl = news_risk.get("risk_level", "")
+                    events = news_risk.get("high_impact_today", [])
+                    event_names = ", ".join(e.get("title", "") for e in events[:5])
+                session.execute(sa_text("""
+                    UPDATE signals SET
+                        news_risk_level    = :news_risk_level,
+                        news_event_names   = :news_event_names,
+                        news_trade_blocked = :news_trade_blocked
+                    WHERE id = :signal_id
+                """), {
+                    "news_risk_level":    rl,
+                    "news_event_names":   event_names,
+                    "news_trade_blocked": news_trade_blocked,
+                    "signal_id":          flushed_id,
+                })
+            except Exception as ne:
+                log.warning("Could not save news fields: %s", ne)
 
         session.commit()
         signal_id = flushed_id
@@ -588,7 +613,8 @@ Dashboard: check your Streamlit app for full details.
 
 def print_terminal_summary(analysis_date, combined, levels, price_data,
                             claude_r, gpt_r, signal_id, run_cost, mtd_cost,
-                            entry_strategy=None, mtf_data=None, mtf_aligned=False):
+                            entry_strategy=None, mtf_data=None, mtf_aligned=False,
+                            news_risk=None, news_trade_blocked=False):
     """Print the clean terminal signal box."""
     signal = combined["signal"]
     conf   = combined["confidence"]
@@ -636,9 +662,17 @@ def print_terminal_summary(analysis_date, combined, levels, price_data,
         w_trend = (mtf_data.get("weekly_trend") or "unknown").upper()
         h4_trend = (mtf_data.get("h4_trend") or "unknown").upper()
         mtf_bias = mtf_data.get("mtf_bias", "NEUTRAL")
-        aligned_str = "YES -- paper trade placed" if mtf_aligned else "NO -- paper trade SKIPPED"
+        aligned_str = "YES -- paper trade placed" if (mtf_aligned and not news_trade_blocked) else "NO -- paper trade SKIPPED"
         print(f"  Weekly trend: {w_trend}  |  4H trend: {h4_trend}")
         print(f"  MTF bias:     {mtf_bias}  |  Aligned: {aligned_str}")
+        print("-" * 50)
+    if news_risk and news_risk.get("risk_level") != "clear":
+        rl = news_risk.get("risk_level", "").upper()
+        warning = news_risk.get("warning_message", "")
+        blocked_str = " *** PAPER TRADE BLOCKED ***" if news_trade_blocked else ""
+        print(f"  NEWS RISK:    {rl}{blocked_str}")
+        if warning:
+            print(f"  {warning}")
         print("-" * 50)
     print(f"  Cost this run:    GBP {run_cost:.4f}")
     print(f"  Month to date:    GBP {mtd_cost:.4f}")
@@ -849,6 +883,8 @@ def main():
         entry_strategy=entry_strategy,
         mtf_data=mtf_data,
         mtf_aligned=mtf_aligned,
+        news_risk=news_risk,
+        news_trade_blocked=news_trade_blocked,
     )
 
     # Step 8b: Save ensemble model votes to database
@@ -895,15 +931,26 @@ def main():
         except Exception as e:
             log.error(f"Could not update ensemble fields: {e}")
 
-    # Step 8c: Open virtual paper trade (only when MTF aligned or no MTF data)
+    # Step 8c: Open virtual paper trade (only when MTF aligned and no news block)
     vtrade = None
-    mtf_skip_reason = None
+    trade_skip_reason = None
+
+    # Check MTF conflict
     if mtf_data and not mtf_aligned and combined["signal"] != "HOLD":
-        mtf_skip_reason = (
+        trade_skip_reason = (
             f"MTF conflict: daily={combined['signal']} vs MTF bias={mtf_data.get('mtf_bias')} "
             f"({mtf_data.get('mtf_notes', '')})"
         )
-        log.info(f"Paper trade SKIPPED -- {mtf_skip_reason}")
+        log.info(f"Paper trade SKIPPED -- {trade_skip_reason}")
+
+    # Check news risk -- override trade even if MTF aligned
+    news_trade_blocked = False
+    if news_risk and news_risk.get("risk_level") in ("binary", "high") and combined["signal"] != "HOLD":
+        news_trade_blocked = True
+        news_reason = f"News blocked: {news_risk.get('warning_message', 'high-impact event today')}"
+        if not trade_skip_reason:
+            trade_skip_reason = news_reason
+        log.warning(f"Paper trade BLOCKED by news risk -- {news_reason}")
 
     try:
         from tracker.virtual_account import open_trade
@@ -912,7 +959,7 @@ def main():
         initialise_virtual_account(vsession)
         trade_signal = {
             "id":            signal_id,
-            "signal":        combined["signal"] if not mtf_skip_reason else "HOLD",
+            "signal":        combined["signal"] if not trade_skip_reason else "HOLD",
             "entry_price":   levels.get("entry"),
             "stop_loss":     levels.get("stop_loss"),
             "take_profit":   levels.get("take_profit"),
@@ -955,7 +1002,8 @@ def main():
     print_terminal_summary(analysis_date, combined, levels, price_data,
                            claude_result, gpt_result, signal_id, run_cost, mtd_cost,
                            entry_strategy=entry_strategy,
-                           mtf_data=mtf_data, mtf_aligned=mtf_aligned)
+                           mtf_data=mtf_data, mtf_aligned=mtf_aligned,
+                           news_risk=news_risk, news_trade_blocked=news_trade_blocked)
 
     # Step 11b: Print ensemble vote breakdown
     if consensus.get("all_votes"):

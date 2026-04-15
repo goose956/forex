@@ -28,6 +28,4 @@ apscheduler>=3.10.0
 # Excel export
 openpyxl>=3.1.0
 
-# TradingAgents -- pinned to commit known to work with claude-sonnet-4-6
-# Unpinned installs the latest which may have different model defaults
-git+https://github.com/TauricResearch/TradingAgents.git@10c136f49c82e11f0e324c9c50cda1638a8ed5a7
+# Note: TradingAgents removed -- analysis now calls Anthropic/OpenAI APIs directly

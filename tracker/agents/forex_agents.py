@@ -1,101 +1,30 @@
 """
-tracker/agents/forex_agents.py -- Forex-optimised wrapper around TradingAgents.
+tracker/agents/forex_agents.py -- Direct LLM forex analysis (no TradingAgents dependency).
 
-This module wraps the existing TradingAgents installation with forex-specific
-system prompts and returns structured signal dictionaries.
-
-Usage:
-    from tracker.agents.forex_agents import ForexTradingAgents
-
-    fa = ForexTradingAgents(pair="GBPUSD=X", provider="anthropic")
-    result = fa.run(date="2024-01-15", context_data=context)
-    print(result["signal"], result["confidence"])
+Calls Anthropic and OpenAI APIs directly with forex-specific prompts.
+Returns the same structured signal dict as before so nothing else needs changing.
 """
 
 import os
-import sys
+import re
 import logging
-from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-# TradingAgents is installed via pip from GitHub into this venv.
-# It is imported normally below -- no sys.path manipulation needed.
-
 log = logging.getLogger("forex_agents")
 
-# ---- Forex-specific system prompts ------------------------------------------
-
-FOREX_PROMPTS = {
-    "market": """You are a professional forex technical analyst specialising in currency pairs, primarily GBP/USD.
-Analyse the provided price data and indicators:
-- Identify trend direction on Daily and 4H timeframes
-- Assess price position relative to 50 MA and 200 MA
-- Evaluate RSI(14) for overbought/oversold conditions
-- Assess MACD momentum and any recent crossovers
-- Identify the nearest key support and resistance levels
-- Use ATR(14) for volatility context
-- Assess higher highs/higher lows price structure
-Provide a clear technical bias: BULLISH, BEARISH or NEUTRAL with specific price levels and reasoning.
-IMPORTANT: Do not reference earnings, P/E ratios, revenue, or any company/stock metrics. This is a currency pair analysis only.""",
-
-    "fundamentals": """You are a professional forex fundamental analyst specialising in GBP/USD macroeconomic drivers.
-Using the provided fundamental context, analyse:
-- Bank of England vs Federal Reserve interest rate differential and forward guidance trajectory
-- Recent UK economic data and surprises: CPI inflation, employment, GDP growth, PMI surveys
-- Recent US economic data and surprises: Non-Farm Payrolls, CPI, FOMC decisions, retail sales, ISM surveys
-- Any upcoming high-impact economic events this week flagged in the provided calendar data
-- Relative strength of GBP and USD against other major currencies
-- Current risk-on vs risk-off market environment
-Provide a clear fundamental bias: BULLISH GBP, BEARISH GBP, or NEUTRAL with key drivers.
-IMPORTANT: Do not reference stock market valuations, company earnings, or equity metrics.""",
-
-    "news": """You are a professional forex news analyst assessing the impact of recent news on GBP/USD.
-Using the provided headlines and news context:
-- Identify UK news that impacts GBP positively or negatively
-- Identify US news that impacts USD positively or negatively
-- Flag any central bank speeches or policy signals
-- Identify any global risk events affecting safe haven USD demand
-- Note any trade, geopolitical or political developments affecting either currency
-For each significant news item state:
-  Impact: HIGH / MEDIUM / LOW
-  Direction: GBP POSITIVE / GBP NEGATIVE / NEUTRAL
-  Timeframe: IMMEDIATE / SHORT-TERM / LONG-TERM
-Provide overall news sentiment: BULLISH GBP, BEARISH GBP, or MIXED""",
-
-    "social": """You are a professional forex market sentiment analyst.
-Using the provided context, assess current market sentiment for GBP/USD:
-- Evaluate recent price momentum and follow-through
-- Consider whether retail sentiment is typically contrarian to price direction
-- Assess whether current move has conviction (volume, follow-through) or looks exhausted
-- Consider broader market risk appetite and its effect on GBP/USD
-- Note any significant positioning extremes if known
-State overall sentiment: BULLISH / BEARISH / NEUTRAL
-State whether this is a CONTRARIAN or CONFIRMING signal relative to the technical picture.""",
-
-    "risk": """You are a conservative professional forex risk manager. Your job is to protect capital above all else.
-Assess the proposed GBP/USD trade:
-- Verify stop loss is placed at a logical structure level, not an arbitrary distance
-- Confirm minimum risk/reward ratio of 1:2 is met
-- Check for any major news events in next 24 hours that create unacceptable gap or spike risk
-- Assess whether current volatility (ATR) makes the trade viable or oversized
-- Consider whether multiple timeframes confirm the signal direction
-- Evaluate overall trade quality on scale of 1-10 where 10 is highest quality
-Rate overall trade risk: LOW / MEDIUM / HIGH / EXTREME
-REJECT and recommend HOLD for any EXTREME risk rating.
-State clearly whether you APPROVE or REJECT the trade.""",
-}
+# ---- Models ------------------------------------------------------------------
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+OPENAI_MODEL    = "gpt-4o-mini"
 
 # ---- Cost constants (USD per 1M tokens) -------------------------------------
 PRICING = {
-    "claude-sonnet-4-6":         (3.00, 15.00),
-    "claude-sonnet-4-5":         (3.00, 15.00),
-    "claude-3-5-haiku-20241022": (0.80,  4.00),
-    "claude-haiku-4-5-20251001": (0.80,  4.00),
-    "gpt-4o":                  (5.00, 15.00),
-    "gpt-4o-mini":             (0.15,  0.60),
+    "claude-sonnet-4-6":  (3.00, 15.00),
+    "claude-sonnet-4-5":  (3.00, 15.00),
+    "gpt-4o":             (5.00, 15.00),
+    "gpt-4o-mini":        (0.15,  0.60),
 }
 USD_TO_GBP = 0.79
 
@@ -113,168 +42,220 @@ def _rough_tokens(text):
     return max(100, len(str(text)) // 4)
 
 
+def _parse_signal(text: str) -> str:
+    text_upper = text.upper()
+    # Look for explicit signal keywords
+    for keyword in ["STRONG BUY", "STRONG SELL"]:
+        if keyword in text_upper:
+            return keyword.split()[-1]  # BUY or SELL
+    if "BUY" in text_upper and "SELL" not in text_upper:
+        return "BUY"
+    if "SELL" in text_upper and "BUY" not in text_upper:
+        return "SELL"
+    # Both mentioned -- pick last clear decision
+    buy_pos  = text_upper.rfind("BUY")
+    sell_pos = text_upper.rfind("SELL")
+    if buy_pos > sell_pos:
+        return "BUY"
+    if sell_pos > buy_pos:
+        return "SELL"
+    return "HOLD"
+
+
+def _parse_confidence(text: str) -> int:
+    # Look for explicit confidence score e.g. "confidence: 7/10" or "7 out of 10"
+    patterns = [
+        r'confidence[:\s]+(\d+)\s*/\s*10',
+        r'(\d+)\s*/\s*10\s+confidence',
+        r'confidence[:\s]+(\d+)',
+        r'(\d+)\s+out\s+of\s+10',
+    ]
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            val = int(m.group(1))
+            return max(1, min(10, val))
+    # Fallback: infer from language
+    text_lower = text.lower()
+    if any(w in text_lower for w in ["strong", "high conviction", "clear", "confident"]):
+        return 7
+    if any(w in text_lower for w in ["moderate", "mixed", "uncertain"]):
+        return 5
+    return 5
+
+
+# ---- Master analysis prompt --------------------------------------------------
+
+SYSTEM_PROMPT = """You are a professional forex trader and analyst specialising in GBP/USD (British Pound / US Dollar).
+You combine technical analysis, fundamental analysis, news sentiment, and market psychology to generate high-quality trade signals.
+Your job is to analyse all available data and produce a structured trading recommendation.
+Be direct, specific, and use precise price levels. Do not reference equities, earnings, P/E ratios or stock metrics."""
+
+def _build_user_prompt(pair: str, date: str, context_data: dict) -> str:
+    ctx = context_data or {}
+
+    # Build context sections
+    technical = ctx.get("technical_context", "")
+    news      = ctx.get("news_text", "No news data available.")
+    calendar  = ctx.get("calendar_text", "No calendar data available.")
+    price_ctx = ctx.get("price_context", "")
+
+    prompt = f"""Analyse GBP/USD for {date} and produce a trading signal.
+
+{'=' * 60}
+TECHNICAL CONTEXT
+{'=' * 60}
+{technical or price_ctx or 'Standard technical analysis required.'}
+
+{'=' * 60}
+NEWS & SENTIMENT
+{'=' * 60}
+{news}
+
+{'=' * 60}
+ECONOMIC CALENDAR
+{'=' * 60}
+{calendar}
+
+{'=' * 60}
+REQUIRED OUTPUT FORMAT
+{'=' * 60}
+Provide your analysis in the following exact sections:
+
+TECHNICAL SUMMARY:
+[2-3 sentences on trend, key levels, indicator readings]
+
+FUNDAMENTAL SUMMARY:
+[2-3 sentences on rate differentials, macro backdrop]
+
+NEWS SUMMARY:
+[Key news items and their GBP/USD impact]
+
+SENTIMENT SUMMARY:
+[Market sentiment and positioning assessment]
+
+BULL ARGUMENT:
+[Top 3 reasons to buy GBP/USD]
+
+BEAR ARGUMENT:
+[Top 3 reasons to sell GBP/USD]
+
+RISK ASSESSMENT:
+[Key risks and trade invalidation levels]
+
+INVESTMENT PLAN:
+[Specific entry rationale, key levels to watch]
+
+FINAL DECISION:
+[Signal: BUY / SELL / HOLD]
+[Confidence: X/10]
+[Reasoning: 2-3 sentences explaining the final call]
+"""
+    return prompt
+
+
 # ---- ForexTradingAgents class -----------------------------------------------
 
 class ForexTradingAgents:
     """
-    Wraps TradingAgentsGraph with forex-specific system prompts.
+    Direct LLM forex analysis using Anthropic or OpenAI APIs.
 
     Args:
         pair:     yfinance ticker, e.g. "GBPUSD=X"
         provider: "anthropic" or "openai"
-        debug:    pass True to stream agent output to terminal
+        debug:    unused, kept for API compatibility
     """
 
     def __init__(self, pair: str = "GBPUSD=X", provider: str = "anthropic", debug: bool = False):
-        self.pair = pair
+        self.pair     = pair
         self.provider = provider.lower()
-        self.debug = debug
-        self._graph = None
-        self._config = None
-
-    def _build_graph(self):
-        """Lazy-initialise the TradingAgents graph."""
-        from tradingagents.graph.trading_graph import TradingAgentsGraph
-        from tradingagents.default_config import DEFAULT_CONFIG
-
-        # Patch DEFAULT_CONFIG in-place BEFORE copying -- TradingAgents reads
-        # from this dict directly in some agents, so our copy-and-override alone
-        # is not enough.
-        if self.provider == "anthropic":
-            DEFAULT_CONFIG["llm_provider"]    = "anthropic"
-            DEFAULT_CONFIG["deep_think_llm"]  = "claude-sonnet-4-6"
-            DEFAULT_CONFIG["quick_think_llm"] = "claude-sonnet-4-6"
-            DEFAULT_CONFIG["backend_url"]     = None
-        else:
-            DEFAULT_CONFIG["llm_provider"]    = "openai"
-            DEFAULT_CONFIG["deep_think_llm"]  = "gpt-4o-mini"
-            DEFAULT_CONFIG["quick_think_llm"] = "gpt-4o-mini"
-            DEFAULT_CONFIG["backend_url"]     = "https://api.openai.com/v1"
-
-        config = DEFAULT_CONFIG.copy()
-        config["max_debate_rounds"]      = 1
-        config["max_risk_discuss_rounds"] = 1
-        config["data_vendors"] = {
-            "core_stock_apis":      "yfinance",
-            "technical_indicators": "yfinance",
-            "fundamental_data":     "yfinance",
-            "news_data":            "yfinance",
-        }
-
-        self._config = config
-        self._graph = TradingAgentsGraph(
-            selected_analysts=["market", "social", "news", "fundamentals"],
-            debug=self.debug,
-            config=config,
-        )
-        log.info(f"TradingAgentsGraph built: provider={self.provider}")
+        self.debug    = debug
 
     def run(self, date: str, context_data: dict = None) -> dict:
         """
         Run analysis for self.pair on the given date.
 
-        Args:
-            date:         "YYYY-MM-DD"
-            context_data: optional dict with 'calendar_text', 'news_text', etc.
-                          injected into the initial state message if provided
-
         Returns:
-            Structured signal dict with all agent outputs.
+            Structured signal dict compatible with the existing pipeline.
         """
-        if self._graph is None:
-            self._build_graph()
-
         log.info(f"Running {self.provider} analysis: {self.pair} {date}")
         start = datetime.now()
 
-        try:
-            final_state, processed_signal = self._graph.propagate(self.pair, date)
-        except Exception as e:
-            log.error(f"Analysis failed: {e}")
-            raise
+        user_prompt = _build_user_prompt(self.pair, date, context_data or {})
+        response_text = ""
+
+        if self.provider == "anthropic":
+            response_text, in_tok, out_tok = self._call_anthropic(user_prompt)
+            model = ANTHROPIC_MODEL
+        else:
+            response_text, in_tok, out_tok = self._call_openai(user_prompt)
+            model = OPENAI_MODEL
 
         elapsed = (datetime.now() - start).total_seconds()
+        log.info(f"{self.provider} analysis complete in {elapsed:.1f}s "
+                 f"({in_tok} in / {out_tok} out tokens)")
 
-        # Extract fields
-        decision_text = final_state.get("final_trade_decision", "")
-        signal_action = _parse_signal(decision_text)
-        confidence    = _parse_confidence(decision_text)
+        signal     = _parse_signal(response_text)
+        confidence = _parse_confidence(response_text)
+        cost_gbp   = _estimate_cost(model, in_tok, out_tok)
 
-        # Investment debate
-        debate = final_state.get("investment_debate_state", {})
-        bull_arg  = debate.get("bull_history",  "") if isinstance(debate, dict) else ""
-        bear_arg  = debate.get("bear_history",  "") if isinstance(debate, dict) else ""
-
-        # Risk debate
-        risk = final_state.get("risk_debate_state", {})
-        risk_text = risk.get("history", "") if isinstance(risk, dict) else ""
-
-        # Token estimate
-        all_text    = " ".join(str(v) for v in final_state.values() if v)
-        out_tokens  = _rough_tokens(all_text)
-        in_tokens   = out_tokens * 5
-        model       = self._config["deep_think_llm"]
-        cost_gbp    = _estimate_cost(model, in_tokens, out_tokens)
+        def _extract(label):
+            pattern = rf'{label}:\s*\n?(.*?)(?=\n[A-Z ]+:|$)'
+            m = re.search(pattern, response_text, re.IGNORECASE | re.DOTALL)
+            return m.group(1).strip() if m else ""
 
         return {
             "pair":                 self.pair,
             "date":                 date,
             "provider":             self.provider,
             "model":                model,
-            "signal":               signal_action,
+            "signal":               signal,
             "confidence":           confidence,
-            "processed_signal":     processed_signal,
-            "full_reasoning":       decision_text,
-            "technical_summary":    final_state.get("market_report",        ""),
-            "fundamental_summary":  final_state.get("fundamentals_report",  ""),
-            "news_summary":         final_state.get("news_report",          ""),
-            "sentiment_summary":    final_state.get("sentiment_report",     ""),
-            "bull_argument":        bull_arg,
-            "bear_argument":        bear_arg,
-            "risk_assessment":      risk_text,
-            "investment_plan":      final_state.get("investment_plan",      ""),
-            "tokens_input":         in_tokens,
-            "tokens_output":        out_tokens,
-            "tokens_total":         in_tokens + out_tokens,
+            "processed_signal":     signal,
+            "full_reasoning":       _extract("FINAL DECISION"),
+            "technical_summary":    _extract("TECHNICAL SUMMARY"),
+            "fundamental_summary":  _extract("FUNDAMENTAL SUMMARY"),
+            "news_summary":         _extract("NEWS SUMMARY"),
+            "sentiment_summary":    _extract("SENTIMENT SUMMARY"),
+            "bull_argument":        _extract("BULL ARGUMENT"),
+            "bear_argument":        _extract("BEAR ARGUMENT"),
+            "risk_assessment":      _extract("RISK ASSESSMENT"),
+            "investment_plan":      _extract("INVESTMENT PLAN"),
+            "tokens_input":         in_tok,
+            "tokens_output":        out_tok,
+            "tokens_total":         in_tok + out_tok,
             "estimated_cost_gbp":   cost_gbp,
             "elapsed_seconds":      round(elapsed, 1),
         }
 
+    def _call_anthropic(self, user_prompt: str) -> tuple:
+        """Call Anthropic API directly. Returns (response_text, in_tokens, out_tokens)."""
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        message = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=2048,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        text     = message.content[0].text
+        in_tok   = message.usage.input_tokens
+        out_tok  = message.usage.output_tokens
+        return text, in_tok, out_tok
 
-# ---- Helpers -----------------------------------------------------------------
-
-def _parse_signal(text: str) -> str:
-    t = text.upper()
-    if "BUY" in t or "LONG" in t:
-        return "BUY"
-    if "SELL" in t or "SHORT" in t:
-        return "SELL"
-    return "HOLD"
-
-
-def _parse_confidence(text: str) -> int:
-    """Return confidence as integer 1-10."""
-    high   = ["strongly", "confident", "clear", "definitive", "strong", "high confidence", "clearly"]
-    medium = ["likely", "suggests", "indicates", "moderate", "cautious", "probably"]
-    low    = ["uncertain", "unclear", "mixed", "weak", "limited", "inconclusive"]
-    t = text.lower()
-    if any(w in t for w in high):
-        return 8
-    if any(w in t for w in low):
-        return 4
-    if any(w in t for w in medium):
-        return 6
-    return 6
-
-
-# ---- Quick test --------------------------------------------------------------
-if __name__ == "__main__":
-    print("Testing ForexTradingAgents with GBPUSD=X / 2024-01-15 / anthropic...")
-    fa = ForexTradingAgents(pair="GBPUSD=X", provider="anthropic", debug=False)
-    result = fa.run(date="2024-01-15")
-    print(f"\nSignal:     {result['signal']}")
-    print(f"Confidence: {result['confidence']}/10")
-    print(f"Provider:   {result['provider']} / {result['model']}")
-    print(f"Cost:       GBP {result['estimated_cost_gbp']:.4f}")
-    print(f"Duration:   {result['elapsed_seconds']}s")
-    print(f"\nProcessed signal: {result['processed_signal']}")
+    def _call_openai(self, user_prompt: str) -> tuple:
+        """Call OpenAI API directly. Returns (response_text, in_tokens, out_tokens)."""
+        from openai import OpenAI
+        client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            max_tokens=2048,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": user_prompt},
+            ],
+        )
+        text    = response.choices[0].message.content
+        in_tok  = response.usage.prompt_tokens
+        out_tok = response.usage.completion_tokens
+        return text, in_tok, out_tok

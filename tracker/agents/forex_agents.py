@@ -229,18 +229,29 @@ class ForexTradingAgents:
         }
 
     def _call_anthropic(self, user_prompt: str) -> tuple:
-        """Call Anthropic API directly. Returns (response_text, in_tokens, out_tokens)."""
+        """Call Anthropic API with extended thinking enabled.
+        Returns (response_text, in_tokens, out_tokens).
+        Thinking tokens are included in out_tokens for cost tracking.
+        """
         import anthropic
         client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
         message = client.messages.create(
             model=ANTHROPIC_MODEL,
-            max_tokens=2048,
+            max_tokens=16000,           # must exceed budget_tokens
+            thinking={
+                "type": "enabled",
+                "budget_tokens": 8000,  # internal reasoning scratchpad
+            },
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
-        text     = message.content[0].text
-        in_tok   = message.usage.input_tokens
-        out_tok  = message.usage.output_tokens
+        # Extract only text blocks -- thinking blocks are internal and not part of the signal
+        text = "".join(
+            block.text for block in message.content if block.type == "text"
+        )
+        in_tok  = message.usage.input_tokens
+        # thinking tokens count as output tokens for billing
+        out_tok = message.usage.output_tokens
         return text, in_tok, out_tok
 
     def _call_openai(self, user_prompt: str) -> tuple:

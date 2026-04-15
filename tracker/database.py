@@ -130,6 +130,9 @@ class Signal(Base):
     trend_direction     = Column(Text)           # up / down / sideways
     above_200ma         = Column(Boolean)
     session             = Column(Text)           # london / newyork / overlap
+    news_risk_level     = Column(Text, nullable=True)     # binary / high / medium / low / clear
+    news_event_names    = Column(Text, nullable=True)     # comma-separated event titles
+    news_trade_blocked  = Column(Boolean, nullable=True)  # True if paper trade blocked by news
 
 
 # ---- Table: outcomes ---------------------------------------------------------

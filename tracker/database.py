@@ -383,6 +383,33 @@ def add_confluence_columns():
                     pass
 
 
+def add_entry_strategy_columns():
+    """
+    Add entry strategy columns to the signals table.
+    Stores the calculated smart entry type, price, and rationale.
+    All nullable -- safe to add to existing tables.
+    """
+    engine = get_engine()
+    entry_cols = [
+        ("order_type",         "TEXT"),       # market / limit / stop
+        ("smart_entry_price",  "DECIMAL(10,5)"),
+        ("entry_rationale",    "TEXT"),
+        ("pips_from_current",  "DECIMAL(6,1)"),
+        ("order_expires_bars", "INTEGER"),    # cancel after N daily bars if unfilled
+    ]
+    with engine.connect() as conn:
+        for col_name, col_type in entry_cols:
+            try:
+                conn.execute(text(f"ALTER TABLE signals ADD COLUMN {col_name} {col_type}"))
+                conn.commit()
+                log.info("Added column: signals.%s", col_name)
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+
 def add_ensemble_columns():
     """
     Add ensemble tracking columns to the signals table if they don't exist.
@@ -415,6 +442,7 @@ def create_tables():
     log.info("All tables created (or already exist).")
     add_confluence_columns()
     add_ensemble_columns()
+    add_entry_strategy_columns()
     print("Database tables ready.")
 
 

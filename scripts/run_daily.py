@@ -419,10 +419,15 @@ def write_daily_report(analysis_date: date, combined: dict, claude_r: dict,
         f"Agreement:         {agree_str}",
         "",
         "-- PRICE DATA --",
-        f"Close: {price_data.get('close', 'N/A'):.5f}  "
-        f"Trend: {price_data.get('trend_direction','?').upper()}  "
-        f"RSI: {price_data.get('rsi_14', 0):.1f}  "
-        f"Above 200MA: {'YES' if price_data.get('above_200ma') else 'NO'}",
+        (
+            f"Close: {price_data['close']:.5f}  " if price_data.get('close') is not None else "Close: N/A  "
+        ) + (
+            f"Trend: {price_data.get('trend_direction','?').upper()}  "
+        ) + (
+            f"RSI: {price_data['rsi_14']:.1f}  " if price_data.get('rsi_14') is not None else "RSI: N/A  "
+        ) + (
+            f"Above 200MA: {'YES' if price_data.get('above_200ma') else 'NO'}"
+        ),
         "",
         "-- CLAUDE ANALYSIS --",
         "",
@@ -647,13 +652,7 @@ def main():
         log.error(f"News risk assessment failed (continuing): {e}")
 
     # --- Ensemble: run OpenRouter models (uses pre-fetched confluence data) ---
-    ensemble_votes = []
-    try:
-        ensemble_votes = run_ensemble(price_data_conf, market_data_conf, context_data=ctx)
-        if ensemble_votes:
-            log.info(f"Ensemble: {len(ensemble_votes)} models voted")
-    except Exception as e:
-        log.error(f"Ensemble failed (continuing without): {e}")
+    ensemble_votes = []   # populated after ctx is built in Step 3
 
     # Step 3: Collect data
     log.info("Collecting market data...")
@@ -686,6 +685,14 @@ def main():
             ctx['technical_context'] = tech_ctx
         elif isinstance(ctx, str):
             ctx = ctx + tech_ctx
+
+    # --- Ensemble: run OpenRouter models (now ctx is fully built) ---
+    try:
+        ensemble_votes = run_ensemble(price_data_conf, market_data_conf, context_data=ctx)
+        if ensemble_votes:
+            log.info(f"Ensemble: {len(ensemble_votes)} models voted")
+    except Exception as e:
+        log.error(f"Ensemble failed (continuing without): {e}")
 
     # Step 4: Claude analysis
     log.info("Running Claude (anthropic) analysis...")

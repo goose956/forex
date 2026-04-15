@@ -808,6 +808,157 @@ class ConfluenceEngine:
 
     # ---- Summary ---------------------------------------------------------------
 
+    def calculate_entry_strategy(self, price_data: dict, signal: str) -> dict:
+        """
+        Calculate a smart entry price rather than just using current price.
+
+        Returns a dict:
+        {
+          'order_type':    'market' / 'limit' / 'stop',
+          'entry_price':   float,
+          'entry_rationale': str,
+          'pips_from_current': float,  -- how far entry is from current price
+          'expires_bars':  int,        -- cancel unfilled order after N daily bars
+        }
+
+        Order types:
+          market -- enter now (price already at key level)
+          limit  -- wait for a pullback to better price (most common)
+          stop   -- enter on a breakout above/below current price
+
+        For BUY signals:
+          - At support (within 15 pips): market order now
+          - Within 50 pips of support: limit order at support + small buffer
+          - Strong ADX trend (>30), no nearby support: stop order above current
+          - Otherwise: limit order at nearest support
+
+        For SELL signals: mirror logic with resistance.
+        For HOLD: return current price as market order (informational only).
+        """
+        try:
+            if not price_data:
+                return {
+                    'order_type': 'market',
+                    'entry_price': 0.0,
+                    'entry_rationale': 'No price data available -- using current price',
+                    'pips_from_current': 0.0,
+                    'expires_bars': 1,
+                }
+
+            current    = float(price_data.get('current_price', 0))
+            support    = price_data.get('nearest_support')
+            resistance = price_data.get('nearest_resistance')
+            adx        = float(price_data.get('adx_value') or 20)
+            rsi        = float(price_data.get('rsi_value') or 50)
+            at_level   = price_data.get('at_key_level', False)
+            level_type = price_data.get('key_level_type', 'open_space')
+
+            sig = (signal or 'HOLD').upper()
+
+            # Buffer to add/subtract from key level (5 pips)
+            BUFFER = 0.0005
+
+            if sig == 'BUY':
+                if at_level and level_type == 'at_support':
+                    # Already at support -- enter now
+                    entry = current
+                    order_type = 'market'
+                    rationale = f'Price at support {support:.4f} -- market entry now'
+                    expires = 1
+
+                elif support and (current - support) * 10000 <= 50:
+                    # Within 50 pips of support -- limit order for pullback
+                    entry = round(support + BUFFER, 5)
+                    order_type = 'limit'
+                    pips_away = (current - entry) * 10000
+                    rationale = f'Limit order: wait for pullback to support {support:.4f} ({pips_away:.0f} pips below current)'
+                    expires = 2
+
+                elif adx > 30 and rsi < 65:
+                    # Strong uptrend, no close support -- buy the breakout
+                    entry = round(current + BUFFER, 5)
+                    order_type = 'stop'
+                    rationale = f'Strong trend (ADX {adx:.0f}) -- stop entry on breakout above {entry:.4f}'
+                    expires = 1
+
+                elif support:
+                    # Support exists but further away -- still wait for pullback
+                    entry = round(support + BUFFER, 5)
+                    order_type = 'limit'
+                    pips_away = (current - entry) * 10000
+                    rationale = f'Limit order: wait for pullback to support {support:.4f} ({pips_away:.0f} pips below)'
+                    expires = 3
+
+                else:
+                    # No support found -- use current price
+                    entry = current
+                    order_type = 'market'
+                    rationale = 'No key support identified -- entering at current price'
+                    expires = 1
+
+            elif sig == 'SELL':
+                if at_level and level_type == 'at_resistance':
+                    # Already at resistance -- enter now
+                    entry = current
+                    order_type = 'market'
+                    rationale = f'Price at resistance {resistance:.4f} -- market entry now'
+                    expires = 1
+
+                elif resistance and (resistance - current) * 10000 <= 50:
+                    # Within 50 pips of resistance -- limit order for rally
+                    entry = round(resistance - BUFFER, 5)
+                    order_type = 'limit'
+                    pips_away = (entry - current) * 10000
+                    rationale = f'Limit order: wait for rally to resistance {resistance:.4f} ({pips_away:.0f} pips above current)'
+                    expires = 2
+
+                elif adx > 30 and rsi > 35:
+                    # Strong downtrend -- sell the breakdown
+                    entry = round(current - BUFFER, 5)
+                    order_type = 'stop'
+                    rationale = f'Strong trend (ADX {adx:.0f}) -- stop entry on breakdown below {entry:.4f}'
+                    expires = 1
+
+                elif resistance:
+                    entry = round(resistance - BUFFER, 5)
+                    order_type = 'limit'
+                    pips_away = (entry - current) * 10000
+                    rationale = f'Limit order: wait for rally to resistance {resistance:.4f} ({pips_away:.0f} pips above)'
+                    expires = 3
+
+                else:
+                    entry = current
+                    order_type = 'market'
+                    rationale = 'No key resistance identified -- entering at current price'
+                    expires = 1
+
+            else:
+                # HOLD
+                entry = current
+                order_type = 'market'
+                rationale = 'HOLD signal -- entry shown for reference only'
+                expires = 0
+
+            pips_from_current = round((entry - current) * 10000, 1)
+
+            return {
+                'order_type':         order_type,
+                'entry_price':        round(entry, 5),
+                'entry_rationale':    rationale,
+                'pips_from_current':  pips_from_current,
+                'expires_bars':       expires,
+            }
+
+        except Exception as e:
+            log.warning("calculate_entry_strategy failed: %s", e)
+            return {
+                'order_type': 'market',
+                'entry_price': float(price_data.get('current_price', 0)) if price_data else 0.0,
+                'entry_rationale': f'Entry calculation failed: {e}',
+                'pips_from_current': 0.0,
+                'expires_bars': 1,
+            }
+
     def generate_summary(self, scorecard: dict, signal: str) -> str:
         """
         Generate a plain English summary (under 200 words).

@@ -150,7 +150,7 @@ class ForexTradingAgents:
         if self.provider == "anthropic":
             config["llm_provider"]    = "anthropic"
             config["deep_think_llm"]  = "claude-sonnet-4-6"
-            config["quick_think_llm"] = "claude-3-5-haiku-20241022"
+            config["quick_think_llm"] = "claude-haiku-4-5-20251001"
             config["backend_url"]     = None
         else:
             config["llm_provider"]    = "openai"

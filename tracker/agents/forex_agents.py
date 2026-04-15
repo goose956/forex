@@ -137,6 +137,20 @@ class ForexTradingAgents:
         from tradingagents.graph.trading_graph import TradingAgentsGraph
         from tradingagents.default_config import DEFAULT_CONFIG
 
+        # Patch DEFAULT_CONFIG in-place BEFORE copying -- TradingAgents reads
+        # from this dict directly in some agents, so our copy-and-override alone
+        # is not enough.
+        if self.provider == "anthropic":
+            DEFAULT_CONFIG["llm_provider"]    = "anthropic"
+            DEFAULT_CONFIG["deep_think_llm"]  = "claude-sonnet-4-6"
+            DEFAULT_CONFIG["quick_think_llm"] = "claude-sonnet-4-6"
+            DEFAULT_CONFIG["backend_url"]     = None
+        else:
+            DEFAULT_CONFIG["llm_provider"]    = "openai"
+            DEFAULT_CONFIG["deep_think_llm"]  = "gpt-4o-mini"
+            DEFAULT_CONFIG["quick_think_llm"] = "gpt-4o-mini"
+            DEFAULT_CONFIG["backend_url"]     = "https://api.openai.com/v1"
+
         config = DEFAULT_CONFIG.copy()
         config["max_debate_rounds"]      = 1
         config["max_risk_discuss_rounds"] = 1
@@ -146,17 +160,6 @@ class ForexTradingAgents:
             "fundamental_data":     "yfinance",
             "news_data":            "yfinance",
         }
-
-        if self.provider == "anthropic":
-            config["llm_provider"]    = "anthropic"
-            config["deep_think_llm"]  = "claude-sonnet-4-6"
-            config["quick_think_llm"] = "claude-haiku-4-5-20251001"
-            config["backend_url"]     = None
-        else:
-            config["llm_provider"]    = "openai"
-            config["deep_think_llm"]  = "gpt-4o-mini"
-            config["quick_think_llm"] = "gpt-4o-mini"
-            config["backend_url"]     = "https://api.openai.com/v1"
 
         self._config = config
         self._graph = TradingAgentsGraph(

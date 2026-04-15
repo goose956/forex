@@ -201,8 +201,18 @@ def page_today(days, min_conf):
             css_class = f"signal-{(sig.signal or 'hold').lower()}"
             st.markdown(f'<div class="{css_class}" style="font-size:2.5rem;font-weight:bold">{sig.signal or "HOLD"}</div>', unsafe_allow_html=True)
             st.metric("Confidence", f"{sig.confidence or 0}/10")
-            agree_txt = "Yes" if sig.providers_agree else "No"
-            st.metric("Providers Agree", agree_txt)
+            # providers_agree = ensemble-wide majority (>=60% of all models)
+            try:
+                vc = sig.ensemble_vote_count
+                ap = float(sig.ensemble_agreement_pct or 0)
+                if vc and vc > 2:
+                    st.metric("Model Agreement", f"{ap:.0f}%", f"{vc} models")
+                else:
+                    agree_txt = "Yes" if sig.providers_agree else "No"
+                    st.metric("Claude+GPT Agree", agree_txt)
+            except Exception:
+                agree_txt = "Yes" if sig.providers_agree else "No"
+                st.metric("Claude+GPT Agree", agree_txt)
             # Confluence grade if available
             try:
                 grade = sig.confluence_grade
@@ -225,11 +235,18 @@ def page_today(days, min_conf):
             st.markdown("**AI Votes**")
             st.metric("Claude",  sig.claude_signal or "N/A", f"{sig.claude_confidence or 0}/10")
             st.metric("GPT-4o",  sig.gpt_signal    or "N/A", f"{sig.gpt_confidence    or 0}/10")
+            # Check if ensemble overrode Claude+GPT
             try:
-                vc  = sig.ensemble_vote_count
-                ap  = float(sig.ensemble_agreement_pct or 0)
+                c_sig = sig.claude_signal or ""
+                g_sig = sig.gpt_signal    or ""
+                final = sig.signal        or ""
+                vc    = sig.ensemble_vote_count
+                ap    = float(sig.ensemble_agreement_pct or 0)
                 if vc and vc > 2:
                     st.metric("Ensemble", f"{ap:.0f}% agree", f"{vc} models")
+                    # Flag if ensemble overrode both main providers
+                    if c_sig == g_sig and c_sig != final and c_sig != "":
+                        st.warning(f"Ensemble overrode Claude+GPT ({c_sig} → {final})")
             except Exception:
                 pass
 

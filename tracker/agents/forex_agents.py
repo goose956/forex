@@ -17,7 +17,7 @@ log = logging.getLogger("forex_agents")
 
 # ---- Models ------------------------------------------------------------------
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
-OPENAI_MODEL    = "gpt-4o-mini"
+OPENAI_MODEL    = "gpt-4o"
 
 # ---- Cost constants (USD per 1M tokens) -------------------------------------
 PRICING = {

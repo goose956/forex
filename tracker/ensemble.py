@@ -5,12 +5,12 @@ tracker/ensemble.py -- Multi-model ensemble voting with weighted consensus.
 All models receive the same full context (technical, macro, news, calendar).
 
 Weighting tiers:
-  Claude sonnet-4-6          weight 3.0  -- primary, most capable
-  GPT-4o-mini                weight 2.0  -- solid secondary
-  Llama 70B, DeepSeek,
-  Qwen 72B, Gemini Flash     weight 1.0  -- large capable models
-  Mistral Nemo, Flash Lite,
-  Mistral Small              weight 0.5  -- smaller/lite models
+  Claude sonnet-4-6          weight 3.0  -- primary, extended thinking
+  GPT-4o                     weight 2.0  -- strong secondary
+  Llama 70B, DeepSeek, Qwen,
+  Gemini Flash, Grok-3-mini  weight 1.0  -- large capable models
+  Mistral Nemo,
+  Mistral Small              weight 0.5  -- smaller models
 """
 
 import os
@@ -26,9 +26,9 @@ OPENROUTER_PRICING = {
     "meta-llama/llama-3.3-70b-instruct":        (0.100, 0.100),
     "deepseek/deepseek-chat":                   (0.270, 1.100),
     "qwen/qwen-2.5-72b-instruct":               (0.180, 0.180),
-    "mistralai/mistral-nemo":                   (0.035, 0.080),
     "google/gemini-2.0-flash-001":              (0.100, 0.400),
-    "google/gemini-2.0-flash-lite-001":         (0.075, 0.300),
+    "x-ai/grok-3-mini-beta":                    (0.300, 0.500),
+    "mistralai/mistral-nemo":                   (0.035, 0.080),
     "mistralai/mistral-small-3.1-24b-instruct": (0.100, 0.300),
 }
 
@@ -39,14 +39,14 @@ OPENROUTER_WEIGHTS = {
     "deepseek/deepseek-chat":                   1.0,   # strong reasoner -- full vote
     "qwen/qwen-2.5-72b-instruct":               1.0,   # 72B -- full vote
     "google/gemini-2.0-flash-001":              1.0,   # Gemini Flash -- full vote
+    "x-ai/grok-3-mini-beta":                    1.0,   # Grok, real-time data -- full vote
     "mistralai/mistral-nemo":                   0.5,   # smaller -- half vote
-    "google/gemini-2.0-flash-lite-001":         0.5,   # lite -- half vote
     "mistralai/mistral-small-3.1-24b-instruct": 0.5,   # smaller -- half vote
 }
 
 MAIN_MODEL_WEIGHTS = {
     "claude-sonnet-4-6": 3.0,
-    "gpt-4o-mini":       2.0,
+    "gpt-4o":            2.0,
 }
 
 OPENROUTER_MODELS = list(OPENROUTER_PRICING.keys())

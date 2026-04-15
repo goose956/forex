@@ -225,7 +225,6 @@ def page_today(days, min_conf):
             st.markdown("**AI Votes**")
             st.metric("Claude",  sig.claude_signal or "N/A", f"{sig.claude_confidence or 0}/10")
             st.metric("GPT-4o",  sig.gpt_signal    or "N/A", f"{sig.gpt_confidence    or 0}/10")
-            # Show ensemble agreement if available
             try:
                 vc  = sig.ensemble_vote_count
                 ap  = float(sig.ensemble_agreement_pct or 0)
@@ -233,6 +232,33 @@ def page_today(days, min_conf):
                     st.metric("Ensemble", f"{ap:.0f}% agree", f"{vc} models")
             except Exception:
                 pass
+
+        # ---- OpenRouter model votes for today ----
+        try:
+            import pandas as pd
+            from sqlalchemy import text as sa_text
+            eng = get_engine()
+            with eng.connect() as _conn:
+                votes_df = pd.read_sql(sa_text(
+                    "SELECT model_name, signal, confidence FROM model_votes "
+                    "WHERE signal_id = :sid ORDER BY confidence DESC"
+                ), _conn, params={"sid": sig.id})
+            if not votes_df.empty:
+                st.markdown("**OpenRouter Model Votes**")
+                buy_c  = (votes_df["signal"] == "BUY").sum()
+                sell_c = (votes_df["signal"] == "SELL").sum()
+                hold_c = (votes_df["signal"] == "HOLD").sum()
+                vcols = st.columns(3)
+                vcols[0].metric("BUY",  buy_c)
+                vcols[1].metric("SELL", sell_c)
+                vcols[2].metric("HOLD", hold_c)
+                # Individual vote table
+                display = votes_df.copy()
+                display["model_name"] = display["model_name"].str.split("/").str[-1].str[:28]
+                display.columns = ["Model", "Vote", "Conf"]
+                st.dataframe(display, use_container_width=True, hide_index=True)
+        except Exception:
+            pass
 
         # Primary reason expander
         if sig.primary_reason:

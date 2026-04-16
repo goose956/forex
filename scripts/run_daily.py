@@ -375,20 +375,24 @@ def save_signal(combined: dict, claude_r: dict, gpt_r: dict,
                     WHERE id = :signal_id
                 """), {
                     "weekly_trend":        mtf_data.get("weekly_trend"),
-                    "weekly_above_200ma":  mtf_data.get("weekly_above_200ma"),
-                    "weekly_rsi":          mtf_data.get("weekly_rsi"),
+                    "weekly_above_200ma":  bool(mtf_data.get("weekly_above_200ma")),
+                    "weekly_rsi":          float(mtf_data["weekly_rsi"]) if mtf_data.get("weekly_rsi") is not None else None,
                     "weekly_ma_alignment": mtf_data.get("weekly_ma_alignment"),
                     "h4_trend":            mtf_data.get("h4_trend"),
-                    "h4_above_50ma":       mtf_data.get("h4_above_50ma"),
-                    "h4_rsi":              mtf_data.get("h4_rsi"),
+                    "h4_above_50ma":       bool(mtf_data.get("h4_above_50ma")),
+                    "h4_rsi":              float(mtf_data["h4_rsi"]) if mtf_data.get("h4_rsi") is not None else None,
                     "h4_ma_alignment":     mtf_data.get("h4_ma_alignment"),
                     "mtf_bias":            mtf_data.get("mtf_bias"),
-                    "mtf_aligned":         mtf_aligned,
+                    "mtf_aligned":         bool(mtf_aligned),
                     "mtf_notes":           mtf_data.get("mtf_notes"),
                     "signal_id":           flushed_id,
                 })
             except Exception as me:
                 log.warning("Could not save MTF fields: %s", me)
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
 
         # Save news risk fields
         if flushed_id:

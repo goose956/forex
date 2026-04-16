@@ -859,6 +859,11 @@ def main():
     except Exception as e:
         log.error(f"Entry strategy calculation failed (continuing): {e}")
 
+    # Determine news trade block (binary or high impact = block paper trade)
+    news_trade_blocked = False
+    if news_risk and news_risk.get("risk_level") in ("binary", "high") and combined["signal"] != "HOLD":
+        news_trade_blocked = True
+
     # Determine MTF alignment with daily signal
     mtf_aligned = False
     if mtf_data:
@@ -944,9 +949,7 @@ def main():
         log.info(f"Paper trade SKIPPED -- {trade_skip_reason}")
 
     # Check news risk -- override trade even if MTF aligned
-    news_trade_blocked = False
-    if news_risk and news_risk.get("risk_level") in ("binary", "high") and combined["signal"] != "HOLD":
-        news_trade_blocked = True
+    if news_trade_blocked:
         news_reason = f"News blocked: {news_risk.get('warning_message', 'high-impact event today')}"
         if not trade_skip_reason:
             trade_skip_reason = news_reason

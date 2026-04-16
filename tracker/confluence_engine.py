@@ -1052,7 +1052,7 @@ class ConfluenceEngine:
                     order_type = 'limit'
                     pips_away = (current - entry) * 10000
                     rationale = f'Limit order: wait for pullback to support {support:.4f} ({pips_away:.0f} pips below current)'
-                    expires = 2
+                    expires = 1
 
                 elif adx > 30 and rsi < 65:
                     # Strong uptrend, no close support -- buy the breakout
@@ -1067,7 +1067,7 @@ class ConfluenceEngine:
                     order_type = 'limit'
                     pips_away = (current - entry) * 10000
                     rationale = f'Limit order: wait for pullback to support {support:.4f} ({pips_away:.0f} pips below)'
-                    expires = 3
+                    expires = 1
 
                 else:
                     # No support found -- use current price
@@ -1090,7 +1090,7 @@ class ConfluenceEngine:
                     order_type = 'limit'
                     pips_away = (entry - current) * 10000
                     rationale = f'Limit order: wait for rally to resistance {resistance:.4f} ({pips_away:.0f} pips above current)'
-                    expires = 2
+                    expires = 1
 
                 elif adx > 30 and rsi > 35:
                     # Strong downtrend -- sell the breakdown
@@ -1104,7 +1104,7 @@ class ConfluenceEngine:
                     order_type = 'limit'
                     pips_away = (entry - current) * 10000
                     rationale = f'Limit order: wait for rally to resistance {resistance:.4f} ({pips_away:.0f} pips above)'
-                    expires = 3
+                    expires = 1
 
                 else:
                     entry = current

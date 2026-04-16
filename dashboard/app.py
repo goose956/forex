@@ -470,10 +470,22 @@ def page_today(days, min_conf):
         except Exception:
             pass
 
-        # Primary reason expander
-        if sig.primary_reason:
+        # Primary reason / full reasoning expander
+        reason_text = sig.primary_reason or sig.full_reasoning or ""
+        if reason_text:
             with st.expander("View reasoning"):
-                st.write(sig.primary_reason)
+                st.write(reason_text)
+        elif sig.technical_summary or sig.bull_argument:
+            with st.expander("View reasoning"):
+                if sig.technical_summary:
+                    st.markdown("**Technical**")
+                    st.write(sig.technical_summary)
+                if sig.bull_argument:
+                    st.markdown("**Bull case**")
+                    st.write(sig.bull_argument)
+                if sig.bear_argument:
+                    st.markdown("**Bear case**")
+                    st.write(sig.bear_argument)
 
     else:
         st.info("No signal for today yet. Expected: 07:00 UTC via GitHub Actions.")

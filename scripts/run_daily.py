@@ -905,8 +905,37 @@ def main():
     try:
         entry_strategy = engine_c.calculate_entry_strategy(price_data_conf, combined["signal"])
         # Override entry price in levels with smart entry
+        # Then recalculate SL/TP from the new entry so they remain
+        # on the correct side of price (SL below entry for BUY etc.)
         if entry_strategy and entry_strategy["order_type"] != "market":
-            levels["entry"] = entry_strategy["entry_price"]
+            limit_entry = entry_strategy["entry_price"]
+            levels["entry"] = limit_entry
+            # Recalculate from limit entry to keep SL/TP consistent
+            atr = price_data.get("atr_14") or (limit_entry * 0.005)
+            if not atr:
+                atr = limit_entry * 0.005
+            atr = float(atr)
+            sig = combined["signal"]
+            min_stop = atr * 0.5
+            if sig == "BUY":
+                support = price_data.get("nearest_support") or (limit_entry - atr * 2)
+                sl = max(float(support) - atr * 0.1, limit_entry - atr * 0.6)
+                sl = min(sl, limit_entry - min_stop)
+                dist = limit_entry - sl
+                levels["stop_loss"]   = round(sl, 5)
+                levels["take_profit"] = round(limit_entry + dist * 2.0, 5)
+            elif sig == "SELL":
+                resistance = price_data.get("nearest_resistance") or (limit_entry + atr * 2)
+                sl = min(float(resistance) + atr * 0.1, limit_entry + atr * 0.6)
+                sl = max(sl, limit_entry + min_stop)
+                dist = sl - limit_entry
+                levels["stop_loss"]   = round(sl, 5)
+                levels["take_profit"] = round(limit_entry - dist * 2.0, 5)
+            pips_stop = abs(limit_entry - levels["stop_loss"]) * 10000
+            pips_tp   = abs(limit_entry - levels["take_profit"]) * 10000
+            levels["pips_stop"]   = round(pips_stop, 1)
+            levels["pips_tp"]     = round(pips_tp, 1)
+            levels["risk_reward"] = round(pips_tp / pips_stop, 2) if pips_stop > 0 else 0.0
         log.info(
             f"Entry strategy: {entry_strategy['order_type']} at {entry_strategy['entry_price']:.5f} "
             f"({entry_strategy['pips_from_current']:+.0f} pips) -- {entry_strategy['entry_rationale']}"

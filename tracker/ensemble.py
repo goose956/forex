@@ -239,11 +239,11 @@ def calculate_consensus(claude_result, gpt_result, ensemble_votes):
 
     if gpt_result and gpt_result.get("signal"):
         all_votes.append({
-            "model_name": "gpt-4o-mini",
+            "model_name": "gpt-4o",
             "provider":   "openai",
             "signal":     gpt_result["signal"].upper(),
             "confidence": gpt_result.get("confidence", 5),
-            "weight":     MAIN_MODEL_WEIGHTS["gpt-4o-mini"],
+            "weight":     MAIN_MODEL_WEIGHTS["gpt-4o"],
         })
 
     for v in ensemble_votes:

@@ -426,6 +426,122 @@ class ConfluenceEngine:
 
         return result
 
+    def fetch_risk_environment(self) -> dict:
+        """
+        Fetch VIX (fear gauge) and EURUSD trend as additional risk filters.
+
+        Returns dict:
+        {
+            'vix_current':    float or None   -- VIX index level
+            'vix_level':      'low'/'elevated'/'high'/'extreme'
+            'vix_signal':     'clear'/'caution'/'avoid'
+            'eurusd_trend':   'up'/'down'/'sideways'
+            'eurusd_aligned': bool  -- True if EURUSD trend matches GBP signal direction
+            'eurusd_rsi':     float or None
+            'risk_notes':     str
+        }
+        """
+        result = {
+            "vix_current":    None,
+            "vix_level":      None,
+            "vix_signal":     None,
+            "eurusd_trend":   None,
+            "eurusd_aligned": None,
+            "eurusd_rsi":     None,
+            "risk_notes":     "",
+        }
+
+        # ---- VIX ----
+        try:
+            import yfinance as yf
+            import pandas as pd
+            import numpy as np
+
+            vix_df = yf.download("^VIX", period="5d", progress=False, auto_adjust=True)
+            if vix_df is not None and not vix_df.empty:
+                if isinstance(vix_df.columns, pd.MultiIndex):
+                    vix_df.columns = vix_df.columns.droplevel(1)
+                vix_current = float(vix_df["Close"].iloc[-1])
+                result["vix_current"] = round(vix_current, 2)
+
+                if vix_current < 15:
+                    result["vix_level"]  = "low"
+                    result["vix_signal"] = "clear"
+                elif vix_current < 20:
+                    result["vix_level"]  = "normal"
+                    result["vix_signal"] = "clear"
+                elif vix_current < 25:
+                    result["vix_level"]  = "elevated"
+                    result["vix_signal"] = "caution"
+                elif vix_current < 35:
+                    result["vix_level"]  = "high"
+                    result["vix_signal"] = "avoid"
+                else:
+                    result["vix_level"]  = "extreme"
+                    result["vix_signal"] = "avoid"
+
+                log.info("VIX: %.1f (%s)", vix_current, result["vix_level"])
+        except Exception as e:
+            log.warning("VIX fetch failed: %s", e)
+
+        # ---- EURUSD trend ----
+        try:
+            import yfinance as yf
+            import pandas as pd
+            import numpy as np
+
+            eur_df = yf.download("EURUSD=X", period="60d", progress=False, auto_adjust=True)
+            if eur_df is not None and not eur_df.empty:
+                if isinstance(eur_df.columns, pd.MultiIndex):
+                    eur_df.columns = eur_df.columns.droplevel(1)
+                eur_df = eur_df.tail(60)
+                closes = eur_df["Close"].values.astype(float)
+
+                if len(closes) >= 50:
+                    ma50  = float(np.mean(closes[-50:]))
+                    ma20  = float(np.mean(closes[-20:]))
+                    price = float(closes[-1])
+
+                    if price > ma50 and ma20 > ma50:
+                        result["eurusd_trend"] = "up"
+                    elif price < ma50 and ma20 < ma50:
+                        result["eurusd_trend"] = "down"
+                    else:
+                        result["eurusd_trend"] = "sideways"
+
+                    # RSI for EURUSD
+                    if len(closes) >= 15:
+                        period = 14
+                        deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+                        gains  = [max(d, 0.0) for d in deltas]
+                        losses = [max(-d, 0.0) for d in deltas]
+                        avg_gain = sum(gains[:period]) / period
+                        avg_loss = sum(losses[:period]) / period
+                        for i in range(period, len(gains)):
+                            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+                            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+                        if avg_loss == 0:
+                            result["eurusd_rsi"] = 100.0
+                        else:
+                            rs = avg_gain / avg_loss
+                            result["eurusd_rsi"] = round(100.0 - (100.0 / (1 + rs)), 2)
+
+                log.info("EURUSD trend: %s RSI: %s", result["eurusd_trend"], result["eurusd_rsi"])
+        except Exception as e:
+            log.warning("EURUSD fetch failed: %s", e)
+
+        # ---- Build risk notes ----
+        notes = []
+        if result["vix_signal"] == "avoid":
+            notes.append(f"VIX {result['vix_current']:.1f} ({result['vix_level']}) -- high fear, reduce exposure")
+        elif result["vix_signal"] == "caution":
+            notes.append(f"VIX {result['vix_current']:.1f} (elevated) -- trade with caution")
+        if result["eurusd_trend"]:
+            notes.append(f"EURUSD trend: {result['eurusd_trend']}")
+        result["risk_notes"] = " | ".join(notes) if notes else "Risk environment normal"
+
+        return result
+
     # ---- Scoring ---------------------------------------------------------------
 
     def calculate_score(
@@ -438,6 +554,7 @@ class ConfluenceEngine:
         agreement_pct=None,
         vote_count=None,
         news_risk=None,
+        risk_env=None,
     ) -> dict:
         """
         Calculate a multi-factor confluence score for the given signal.
@@ -678,6 +795,69 @@ class ConfluenceEngine:
             factors["news_risk"] = {"score": f_news, "max": 3, "value": rl, "label": lbl}
         else:
             factors["news_risk"] = {"score": None, "max": 3, "value": None, "label": "Calendar data unavailable"}
+
+        # ---- FACTOR 9: VIX Risk Environment (max 2) ----
+        if risk_env is not None:
+            vix_signal = risk_env.get("vix_signal")
+            vix_current = risk_env.get("vix_current")
+            if vix_signal == "clear":
+                f_vix = 2
+                vix_lbl = f"VIX {vix_current} -- low fear, normal conditions"
+            elif vix_signal == "caution":
+                f_vix = 1
+                vix_lbl = f"VIX {vix_current} -- elevated fear, trade with caution"
+            elif vix_signal == "avoid":
+                f_vix = 0
+                vix_lbl = f"VIX {vix_current} -- high fear, unfavourable for GBP"
+            else:
+                f_vix = None
+                vix_lbl = "VIX data unavailable"
+            factors["vix_environment"] = {
+                "score": f_vix, "max": 2,
+                "value": f"VIX: {vix_current} ({risk_env.get('vix_level')})",
+                "label": vix_lbl,
+            }
+        else:
+            factors["vix_environment"] = {"score": None, "max": 2, "value": None, "label": "VIX data unavailable"}
+
+        # ---- FACTOR 10: EURUSD Alignment (max 1) ----
+        if risk_env is not None:
+            eurusd_trend = risk_env.get("eurusd_trend")
+            if eurusd_trend is not None:
+                if is_buy:
+                    # BUY GBPUSD -- want EURUSD also trending up (GBP/EUR correlated)
+                    if eurusd_trend == "up":
+                        f_eur = 1
+                        eur_lbl = "EURUSD trending up -- aligned with BUY"
+                    elif eurusd_trend == "sideways":
+                        f_eur = 1
+                        eur_lbl = "EURUSD sideways -- neutral"
+                    else:
+                        f_eur = 0
+                        eur_lbl = "EURUSD trending down -- divergence warning"
+                elif is_sell:
+                    if eurusd_trend == "down":
+                        f_eur = 1
+                        eur_lbl = "EURUSD trending down -- aligned with SELL"
+                    elif eurusd_trend == "sideways":
+                        f_eur = 1
+                        eur_lbl = "EURUSD sideways -- neutral"
+                    else:
+                        f_eur = 0
+                        eur_lbl = "EURUSD trending up -- divergence warning"
+                else:
+                    f_eur = 1
+                    eur_lbl = f"EURUSD: {eurusd_trend}"
+            else:
+                f_eur = None
+                eur_lbl = "EURUSD data unavailable"
+            factors["eurusd_alignment"] = {
+                "score": f_eur, "max": 1,
+                "value": f"EURUSD trend: {eurusd_trend}",
+                "label": eur_lbl,
+            }
+        else:
+            factors["eurusd_alignment"] = {"score": None, "max": 1, "value": None, "label": "EURUSD data unavailable"}
 
         # ---- AI Confidence (max 3) ----
         if ai_confidence is not None:

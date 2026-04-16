@@ -156,9 +156,13 @@ def signals_to_df(signals, outcomes_map):
             "Weekly":      getattr(s, "weekly_trend",  None) or "",
             "4H":          getattr(s, "h4_trend",      None) or "",
             "MTF Notes":   getattr(s, "mtf_notes",     None) or "",
-            "News Risk":   getattr(s, "news_risk_level",    None) or "",
-            "News Events": getattr(s, "news_event_names",   None) or "",
+            "News Risk":    getattr(s, "news_risk_level",    None) or "",
+            "News Events":  getattr(s, "news_event_names",   None) or "",
             "News Blocked": getattr(s, "news_trade_blocked", None),
+            "VIX":          float(getattr(s, "vix_current", None) or 0) or None,
+            "VIX Level":    getattr(s, "vix_level",   None) or "",
+            "VIX Signal":   getattr(s, "vix_signal",  None) or "",
+            "EURUSD Trend": getattr(s, "eurusd_trend", None) or "",
         })
     return pd.DataFrame(data)
 
@@ -432,6 +436,37 @@ def page_today(days, min_conf):
                         )
                 if mtf_notes:
                     st.caption(f"MTF: {mtf_notes}")
+        except Exception:
+            pass
+
+        # ---- Risk Environment (VIX + EURUSD) ----
+        try:
+            vix_current = getattr(sig, "vix_current", None)
+            vix_level   = getattr(sig, "vix_level",   None)
+            vix_signal  = getattr(sig, "vix_signal",  None)
+            eurusd_trend = getattr(sig, "eurusd_trend", None)
+            if vix_current is not None or eurusd_trend is not None:
+                st.markdown("**Risk Environment**")
+                rc1, rc2 = st.columns(2)
+                if vix_current is not None:
+                    vix_val = float(vix_current)
+                    vix_color = "#1a7f37" if vix_signal == "clear" else ("#9a6700" if vix_signal == "caution" else "#cf222e")
+                    rc1.markdown(
+                        f'<span style="font-size:1.1rem;font-weight:bold;color:{vix_color}">'
+                        f'VIX {vix_val:.1f}</span> <span style="color:#666">({vix_level})</span>',
+                        unsafe_allow_html=True
+                    )
+                    if vix_signal == "avoid":
+                        st.warning(f"VIX {vix_val:.1f} — high market fear. Paper trade may be affected.")
+                    elif vix_signal == "caution":
+                        st.info(f"VIX {vix_val:.1f} — elevated volatility. Trade with caution.")
+                if eurusd_trend is not None:
+                    eur_color = "#1a7f37" if eurusd_trend == "up" else ("#cf222e" if eurusd_trend == "down" else "#6e7781")
+                    rc2.markdown(
+                        f'<span style="font-size:1.1rem;font-weight:bold;color:{eur_color}">'
+                        f'EURUSD {eurusd_trend.upper()}</span>',
+                        unsafe_allow_html=True
+                    )
         except Exception:
             pass
 

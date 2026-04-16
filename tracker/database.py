@@ -133,6 +133,11 @@ class Signal(Base):
     news_risk_level     = Column(Text, nullable=True)     # binary / high / medium / low / clear
     news_event_names    = Column(Text, nullable=True)     # comma-separated event titles
     news_trade_blocked  = Column(Boolean, nullable=True)  # True if paper trade blocked by news
+    vix_current         = Column(Numeric(6, 2), nullable=True)  # VIX level at signal time
+    vix_level           = Column(Text, nullable=True)     # low / normal / elevated / high / extreme
+    vix_signal          = Column(Text, nullable=True)     # clear / caution / avoid
+    eurusd_trend        = Column(Text, nullable=True)     # up / down / sideways
+    eurusd_rsi          = Column(Numeric(6, 2), nullable=True)
 
 
 # ---- Table: outcomes ---------------------------------------------------------
@@ -419,6 +424,29 @@ def add_entry_strategy_columns():
                     pass
 
 
+def add_risk_env_columns():
+    """Add VIX and EURUSD risk environment columns to the signals table."""
+    engine = get_engine()
+    cols = [
+        ("vix_current",  "DECIMAL(6,2)"),
+        ("vix_level",    "TEXT"),
+        ("vix_signal",   "TEXT"),
+        ("eurusd_trend", "TEXT"),
+        ("eurusd_rsi",   "DECIMAL(6,2)"),
+    ]
+    with engine.connect() as conn:
+        for col_name, col_type in cols:
+            try:
+                conn.execute(text(f"ALTER TABLE signals ADD COLUMN {col_name} {col_type}"))
+                conn.commit()
+                log.info("Added column: signals.%s", col_name)
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+
 def add_news_columns():
     """
     Add news risk tracking columns to the signals table.
@@ -539,6 +567,7 @@ def create_tables():
     add_timeframe_columns()
     add_pending_entry_columns()
     add_news_columns()
+    add_risk_env_columns()
     print("Database tables ready.")
 
 

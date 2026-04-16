@@ -200,7 +200,8 @@ def save_signal(combined: dict, claude_r: dict, gpt_r: dict,
                 scorecard: dict = None, confluence_price_data: dict = None,
                 confluence_market_data: dict = None, entry_strategy: dict = None,
                 mtf_data: dict = None, mtf_aligned: bool = None,
-                news_risk: dict = None, news_trade_blocked: bool = False):
+                news_risk: dict = None, news_trade_blocked: bool = False,
+                risk_env: dict = None):
     """Save the combined signal record to the database."""
     from tracker.database import get_session, Signal
     from sqlalchemy import text as sa_text
@@ -417,6 +418,36 @@ def save_signal(combined: dict, claude_r: dict, gpt_r: dict,
                 })
             except Exception as ne:
                 log.warning("Could not save news fields: %s", ne)
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+
+        # Save risk environment fields (VIX + EURUSD)
+        if flushed_id and risk_env:
+            try:
+                session.execute(sa_text("""
+                    UPDATE signals SET
+                        vix_current  = :vix_current,
+                        vix_level    = :vix_level,
+                        vix_signal   = :vix_signal,
+                        eurusd_trend = :eurusd_trend,
+                        eurusd_rsi   = :eurusd_rsi
+                    WHERE id = :signal_id
+                """), {
+                    "vix_current":  float(risk_env["vix_current"]) if risk_env.get("vix_current") is not None else None,
+                    "vix_level":    risk_env.get("vix_level"),
+                    "vix_signal":   risk_env.get("vix_signal"),
+                    "eurusd_trend": risk_env.get("eurusd_trend"),
+                    "eurusd_rsi":   float(risk_env["eurusd_rsi"]) if risk_env.get("eurusd_rsi") is not None else None,
+                    "signal_id":    flushed_id,
+                })
+            except Exception as re_:
+                log.warning("Could not save risk env fields: %s", re_)
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
 
         session.commit()
         signal_id = flushed_id
@@ -618,7 +649,7 @@ Dashboard: check your Streamlit app for full details.
 def print_terminal_summary(analysis_date, combined, levels, price_data,
                             claude_r, gpt_r, signal_id, run_cost, mtd_cost,
                             entry_strategy=None, mtf_data=None, mtf_aligned=False,
-                            news_risk=None, news_trade_blocked=False):
+                            news_risk=None, news_trade_blocked=False, risk_env=None):
     """Print the clean terminal signal box."""
     signal = combined["signal"]
     conf   = combined["confidence"]
@@ -678,6 +709,16 @@ def print_terminal_summary(analysis_date, combined, levels, price_data,
         if warning:
             print(f"  {warning}")
         print("-" * 50)
+    if risk_env and risk_env.get("vix_current") is not None:
+        vix = risk_env.get("vix_current")
+        vix_lv = risk_env.get("vix_level", "")
+        vix_sig = risk_env.get("vix_signal", "")
+        eur_trend = risk_env.get("eurusd_trend", "unknown")
+        print(f"  VIX:          {vix:.1f} ({vix_lv}) -- {vix_sig}")
+        print(f"  EURUSD:       {eur_trend.upper()}")
+        if risk_env.get("risk_notes"):
+            print(f"  {risk_env['risk_notes']}")
+        print("-" * 50)
     print(f"  Cost this run:    GBP {run_cost:.4f}")
     print(f"  Month to date:    GBP {mtd_cost:.4f}")
     print(f"  Signal ID:        {signal_id}")
@@ -730,6 +771,15 @@ def main():
             log.info(f"MTF bias: {mtf_data.get('mtf_bias')} -- {mtf_data.get('mtf_notes')}")
     except Exception as e:
         log.error(f"MTF fetch failed (continuing without): {e}")
+
+    # --- Risk environment (VIX + EURUSD) ---
+    risk_env = None
+    try:
+        risk_env = engine_c.fetch_risk_environment()
+        log.info(f"VIX: {risk_env.get('vix_current')} ({risk_env.get('vix_level')}) -- {risk_env.get('vix_signal')}")
+        log.info(f"EURUSD trend: {risk_env.get('eurusd_trend')} RSI: {risk_env.get('eurusd_rsi')}")
+    except Exception as e:
+        log.error(f"Risk environment fetch failed (continuing without): {e}")
 
     # News risk assessment
     news_risk = None
@@ -840,6 +890,7 @@ def main():
             agreement_pct=consensus.get("agreement_pct"),
             vote_count=consensus.get("vote_count"),
             news_risk=news_risk,
+            risk_env=risk_env,
         )
         log.info(f"Confluence score: {scorecard['confluence_pct']}% grade={scorecard['grade']}")
     except Exception as e:
@@ -894,6 +945,7 @@ def main():
         mtf_aligned=mtf_aligned,
         news_risk=news_risk,
         news_trade_blocked=news_trade_blocked,
+        risk_env=risk_env,
     )
 
     # Step 8b: Save ensemble model votes to database
@@ -1010,7 +1062,8 @@ def main():
                            claude_result, gpt_result, signal_id, run_cost, mtd_cost,
                            entry_strategy=entry_strategy,
                            mtf_data=mtf_data, mtf_aligned=mtf_aligned,
-                           news_risk=news_risk, news_trade_blocked=news_trade_blocked)
+                           news_risk=news_risk, news_trade_blocked=news_trade_blocked,
+                           risk_env=risk_env)
 
     # Step 11b: Print ensemble vote breakdown
     if consensus.get("all_votes"):

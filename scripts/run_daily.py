@@ -1150,6 +1150,25 @@ def main():
     except Exception as e:
         log.error("Virtual trade open failed (non-critical): %s", e)
 
+    # Step 8d: Run baseline rule-based strategy in parallel -- no LLMs, no confluence.
+    # This is the benchmark. If the AI system can't beat this, the ensemble adds no edge.
+    baseline_result = None
+    try:
+        from tracker.baseline_strategy import generate_baseline_signal, save_baseline_signal
+        from tracker.database import get_session as _gs
+        bsession = _gs()
+        baseline_result = generate_baseline_signal(price_data)
+        save_baseline_signal(bsession, analysis_date, PAIR, baseline_result)
+        bsession.close()
+        log.info(
+            "Baseline (%s): %s -- %s",
+            baseline_result["rule_name"],
+            baseline_result["signal"],
+            baseline_result["rule_reason"],
+        )
+    except Exception as e:
+        log.error("Baseline strategy failed (non-critical): %s", e)
+
     # Step 9: Save costs
     save_costs(claude_result, gpt_result, analysis_date)
     run_cost = claude_result.get("estimated_cost_gbp", 0) + gpt_result.get("estimated_cost_gbp", 0)
@@ -1205,6 +1224,18 @@ def main():
             print(f"  [-] {lbl}")
         print("-" * 50)
         print(f"  POSITION SIZE: {scorecard['position_size_pct']}% risk")
+        print("-" * 50)
+
+    # Step 12a: Print baseline strategy comparison
+    if baseline_result:
+        b_sig = baseline_result["signal"]
+        ai_sig = combined["signal"] if not trade_skip_reason else "HOLD"
+        agree = "AGREE" if b_sig == ai_sig else "DIFFER"
+        print("-" * 50)
+        print(f"  BASELINE ({baseline_result['rule_name']}): {b_sig}  |  AI: {ai_sig}  |  {agree}")
+        print(f"  Baseline reason: {baseline_result['rule_reason']}")
+        if b_sig != "HOLD":
+            print(f"  Baseline entry: {baseline_result['entry_price']}  SL: {baseline_result['stop_loss']}  TP: {baseline_result['take_profit']}")
         print("-" * 50)
 
     # Step 12b: Print paper trade info

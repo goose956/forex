@@ -404,6 +404,109 @@ def main():
     log.info("=== update_outcomes.py complete: %dTP %dSL %dexp %dskip ===",
              wins, losses, expired_count, skipped)
 
+    # Also resolve baseline strategy trades
+    resolve_baseline_trades()
+
+
+def resolve_baseline_trades():
+    """Resolve pending baseline strategy trades using same hourly walk logic."""
+    from tracker.database import get_session, BaselineTrade
+
+    session = get_session()
+    try:
+        yesterday = date.today() - timedelta(days=1)
+        pending = session.query(BaselineTrade).filter(
+            BaselineTrade.analysis_date <= yesterday,
+            BaselineTrade.outcome_type.is_(None),
+        ).order_by(BaselineTrade.analysis_date).all()
+    except Exception as e:
+        log.error("Baseline query failed: %s", e)
+        session.close()
+        return
+
+    if not pending:
+        log.info("No pending baseline trades to resolve.")
+        session.close()
+        return
+
+    log.info("Found %d pending baseline trade(s) to check.", len(pending))
+    b_wins = b_losses = b_expired = b_skipped = 0
+
+    for bt in pending:
+        # HOLD signals: just mark as no-trade
+        if bt.signal == "HOLD":
+            bt.outcome_type = "no_trade"
+            bt.outcome_date = date.today()
+            bt.pips_result  = 0
+            session.commit()
+            continue
+
+        pair         = bt.pair or "GBPUSD=X"
+        signal_date  = bt.analysis_date
+        trading_days = trading_days_between(signal_date, date.today())
+
+        df = fetch_hourly_data(pair, signal_date, date.today())
+        if df is None:
+            log.warning("No hourly data for baseline trade id=%s", bt.id)
+            b_skipped += 1
+            continue
+
+        entry     = float(bt.entry_price or 0)
+        sl        = float(bt.stop_loss   or 0)
+        tp        = float(bt.take_profit or 0)
+        direction = (bt.signal or "HOLD").upper()
+
+        hit_tp = hit_sl = False
+        resolution_date = None
+
+        for ts, row in df.iterrows():
+            h = float(row["High"])
+            l = float(row["Low"])
+            if direction == "BUY":
+                if l <= sl:
+                    hit_sl = True; resolution_date = ts.date(); break
+                if h >= tp:
+                    hit_tp = True; resolution_date = ts.date(); break
+            elif direction == "SELL":
+                if h >= sl:
+                    hit_sl = True; resolution_date = ts.date(); break
+                if l <= tp:
+                    hit_tp = True; resolution_date = ts.date(); break
+
+        close_price = float(df["Close"].iloc[-1])
+
+        if hit_tp:
+            bt.outcome_type = "tp_hit"
+            bt.pips_result  = abs(tp - entry) * 10000
+            b_wins += 1
+        elif hit_sl:
+            bt.outcome_type = "sl_hit"
+            bt.pips_result  = -abs(entry - sl) * 10000
+            b_losses += 1
+        elif trading_days >= MAX_TRADING_DAYS:
+            bt.outcome_type = "expired"
+            if direction == "BUY":
+                bt.pips_result = (close_price - entry) * 10000
+            else:
+                bt.pips_result = (entry - close_price) * 10000
+            b_expired += 1
+        else:
+            # Still live -- check again tomorrow
+            session.commit()
+            continue
+
+        bt.outcome_date  = resolution_date or date.today()
+        bt.actual_close  = close_price
+        session.commit()
+        log.info(
+            "Baseline trade id=%s %s: %s (%+.1f pips)",
+            bt.id, direction, bt.outcome_type, float(bt.pips_result),
+        )
+
+    session.close()
+    if b_wins or b_losses or b_expired:
+        print(f"Baseline resolved: {b_wins} TP, {b_losses} SL, {b_expired} expired, {b_skipped} skipped")
+
 
 if __name__ == "__main__":
     main()

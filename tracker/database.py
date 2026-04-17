@@ -286,6 +286,41 @@ class ModelVote(Base):
     pips_result   = Column(Numeric(8, 1), nullable=True)
 
 
+# ---- Table: baseline_trades --------------------------------------------------
+# Rule-based strategy running in parallel to the AI system.
+# Same pair, same period, same risk parameters -- no LLM involvement.
+# Lets us measure whether the AI ensemble actually adds edge.
+class BaselineTrade(Base):
+    __tablename__ = "baseline_trades"
+
+    id                = Column(Integer, primary_key=True, autoincrement=True)
+    created_at        = Column(DateTime, default=datetime.utcnow)
+    analysis_date     = Column(Date, nullable=False)
+    pair              = Column(Text, nullable=False)
+
+    # Signal
+    signal            = Column(Text)            # BUY / SELL / HOLD
+    rule_name         = Column(Text)            # which rule fired, e.g. "200MA+ADX"
+    rule_reason       = Column(Text)            # human-readable explanation
+
+    # Levels (matches main system: 40 pip SL, 1:2 R:R)
+    entry_price       = Column(Numeric(12, 5))
+    stop_loss         = Column(Numeric(12, 5))
+    take_profit       = Column(Numeric(12, 5))
+
+    # Inputs used by the rule
+    current_price     = Column(Numeric(12, 5))
+    price_200ma       = Column(Numeric(12, 5))
+    adx_value         = Column(Numeric(6, 2))
+    rsi_value         = Column(Numeric(6, 2))
+
+    # Outcome (filled in by update_outcomes.py)
+    outcome_type      = Column(Text, nullable=True)    # tp_hit / sl_hit / expired / no_trade
+    outcome_date      = Column(Date, nullable=True)
+    pips_result       = Column(Numeric(8, 1), nullable=True)
+    actual_close      = Column(Numeric(12, 5), nullable=True)
+
+
 # ---- Table: virtual_account --------------------------------------------------
 class VirtualAccount(Base):
     __tablename__ = "virtual_account"

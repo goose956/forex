@@ -174,7 +174,7 @@ def sidebar():
     st.sidebar.caption("GBP/USD AI Analysis System")
     st.sidebar.divider()
 
-    page = st.sidebar.radio("Navigation", ["Today", "Signal History", "Analytics", "Confluence", "Account", "Costs", "News & Calendar", "Settings"])
+    page = st.sidebar.radio("Navigation", ["Today", "Signal History", "Analytics", "Confluence", "Account", "Baseline vs AI", "Costs", "News & Calendar", "Settings"])
 
     st.sidebar.divider()
     st.sidebar.subheader("Filters")
@@ -1085,6 +1085,141 @@ def page_costs():
     st.plotly_chart(figp, use_container_width=True)
 
 
+# ---- Page: Baseline vs AI ----------------------------------------------------
+
+def page_baseline_vs_ai():
+    st.title("Baseline vs AI — Is the AI Actually Adding Edge?")
+    st.caption(
+        "Rule-based strategy (200MA + ADX > 25, fixed 40 pip SL / 80 pip TP) vs "
+        "the full AI ensemble system. If the AI can't beat this, the LLMs aren't worth it."
+    )
+
+    try:
+        from tracker.database import get_session, BaselineTrade, Signal, Outcome
+        session = get_session()
+
+        # Baseline results
+        baseline_trades = session.query(BaselineTrade).order_by(BaselineTrade.analysis_date).all()
+
+        # AI results (resolved signals with outcomes)
+        ai_rows = session.query(Signal, Outcome).outerjoin(
+            Outcome, Outcome.signal_id == Signal.id
+        ).order_by(Signal.analysis_date).all()
+
+        session.close()
+    except Exception as e:
+        st.error(f"Could not load data: {e}")
+        return
+
+    col1, col2 = st.columns(2)
+
+    # ---- Baseline stats ----
+    with col1:
+        st.subheader("Baseline (200MA + ADX)")
+        if not baseline_trades:
+            st.info("No baseline trades yet. Runs daily alongside the AI system.")
+        else:
+            b_resolved = [b for b in baseline_trades if b.outcome_type in ("tp_hit", "sl_hit", "expired")]
+            b_wins     = [b for b in b_resolved if b.outcome_type == "tp_hit"]
+            b_losses   = [b for b in b_resolved if b.outcome_type == "sl_hit"]
+            b_expired  = [b for b in b_resolved if b.outcome_type == "expired"]
+            b_holds    = [b for b in baseline_trades if b.signal == "HOLD"]
+            b_pending  = [b for b in baseline_trades if b.outcome_type is None and b.signal != "HOLD"]
+
+            total_resolved = len(b_wins) + len(b_losses)
+            winrate = (len(b_wins) / total_resolved * 100) if total_resolved > 0 else 0.0
+            total_pips = sum(float(b.pips_result or 0) for b in b_resolved)
+
+            st.metric("Signals generated", len(baseline_trades))
+            st.metric("HOLDs (no trade)", len(b_holds))
+            st.metric("Wins / Losses / Expired", f"{len(b_wins)} / {len(b_losses)} / {len(b_expired)}")
+            st.metric("Win rate", f"{winrate:.1f}%")
+            st.metric("Total pips", f"{total_pips:+.1f}")
+            if b_pending:
+                st.caption(f"{len(b_pending)} trades still pending resolution")
+
+    # ---- AI stats ----
+    with col2:
+        st.subheader("AI Ensemble System")
+        ai_resolved = [(s, o) for s, o in ai_rows if o is not None]
+        ai_wins     = [(s, o) for s, o in ai_resolved if o.would_have_hit_tp]
+        ai_losses   = [(s, o) for s, o in ai_resolved if o.would_have_hit_sl]
+        ai_expired  = [(s, o) for s, o in ai_resolved
+                       if not o.would_have_hit_tp and not o.would_have_hit_sl]
+        ai_holds    = [(s, o) for s, o in ai_rows if s.signal == "HOLD"]
+        ai_pending  = [(s, o) for s, o in ai_rows if o is None and s.signal != "HOLD"]
+
+        total_ai_resolved = len(ai_wins) + len(ai_losses)
+        ai_winrate = (len(ai_wins) / total_ai_resolved * 100) if total_ai_resolved > 0 else 0.0
+        ai_total_pips = sum(float(o.pips_moved or 0) for _, o in ai_resolved)
+
+        st.metric("Signals generated", len(ai_rows))
+        st.metric("HOLDs (no trade)", len(ai_holds))
+        st.metric("Wins / Losses / Expired", f"{len(ai_wins)} / {len(ai_losses)} / {len(ai_expired)}")
+        st.metric("Win rate", f"{ai_winrate:.1f}%")
+        st.metric("Total pips", f"{ai_total_pips:+.1f}")
+        if ai_pending:
+            st.caption(f"{len(ai_pending)} trades still pending resolution")
+
+    st.divider()
+
+    # ---- Verdict ----
+    st.subheader("Verdict")
+    if not baseline_trades or not ai_resolved:
+        st.info(
+            "Not enough data yet. Need at least 20+ resolved trades on each side "
+            "for a meaningful comparison (preferably 100+)."
+        )
+    else:
+        diff_pips  = ai_total_pips - total_pips
+        diff_winrate = ai_winrate - winrate
+        st.write(f"**Pip difference (AI − Baseline):** {diff_pips:+.1f} pips")
+        st.write(f"**Win rate difference (AI − Baseline):** {diff_winrate:+.1f}%")
+        if total_resolved < 20 or total_ai_resolved < 20:
+            st.warning(
+                f"Only {total_resolved} baseline / {total_ai_resolved} AI resolved trades. "
+                "Statistical noise dominates — wait for more data before drawing conclusions."
+            )
+        elif diff_pips > 0 and diff_winrate > 0:
+            st.success("AI is outperforming the baseline on both pips and win rate.")
+        elif diff_pips < 0 and diff_winrate < 0:
+            st.error(
+                "Baseline is beating the AI on both metrics. The LLM ensemble may not be "
+                "adding edge worth its cost and complexity."
+            )
+        else:
+            st.warning("Mixed results — pips and win rate disagree. Keep collecting data.")
+
+    st.divider()
+
+    # ---- Signal-by-signal comparison ----
+    st.subheader("Daily Comparison")
+    if baseline_trades:
+        import pandas as pd
+        # Build comparison rows
+        baseline_by_date = {b.analysis_date: b for b in baseline_trades}
+        ai_by_date       = {s.analysis_date: (s, o) for s, o in ai_rows}
+        all_dates = sorted(set(list(baseline_by_date.keys()) + list(ai_by_date.keys())), reverse=True)
+
+        rows = []
+        for d in all_dates:
+            b = baseline_by_date.get(d)
+            ai = ai_by_date.get(d)
+            rows.append({
+                "Date": d,
+                "Baseline": b.signal if b else "—",
+                "Baseline outcome": (b.outcome_type if b and b.outcome_type else "pending") if b else "—",
+                "Baseline pips": f"{float(b.pips_result):+.0f}" if b and b.pips_result is not None else "—",
+                "AI": ai[0].signal if ai else "—",
+                "AI outcome": ("tp_hit" if ai and ai[1] and ai[1].would_have_hit_tp else
+                               "sl_hit" if ai and ai[1] and ai[1].would_have_hit_sl else
+                               "expired" if ai and ai[1] else
+                               "pending" if ai else "—"),
+                "AI pips": f"{float(ai[1].pips_moved):+.0f}" if ai and ai[1] and ai[1].pips_moved is not None else "—",
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
 # ---- Page 5: Settings --------------------------------------------------------
 
 def page_settings():
@@ -1956,6 +2091,8 @@ def main():
         page_confluence()
     elif page == "Account":
         page_account()
+    elif page == "Baseline vs AI":
+        page_baseline_vs_ai()
     elif page == "Costs":
         page_costs()
     elif page == "News & Calendar":

@@ -247,6 +247,42 @@ def main():
         signal_date     = sig.analysis_date
         trading_days    = trading_days_between(signal_date, date.today())
 
+        # For limit/stop orders: check fill status before resolving.
+        # If the virtual trade is still pending_entry or was cancelled,
+        # the order was never filled -- record as cancelled and skip P&L resolution.
+        if sig.order_type in ("limit", "stop"):
+            from tracker.database import VirtualTrade
+            vtrade = session.query(VirtualTrade).filter_by(signal_id=sig.id).first()
+            if vtrade and vtrade.status in ("pending_entry", "shadow_pending", "cancelled", "shadow_cancelled"):
+                log.info(
+                    "Signal id=%s is a %s order with vtrade status=%s -- limit never filled, skipping outcome.",
+                    sig.id, sig.order_type, vtrade.status,
+                )
+                # Record a cancelled outcome so it doesn't get re-checked every day
+                try:
+                    row = Outcome(
+                        signal_id             = sig.id,
+                        outcome_date          = date.today(),
+                        actual_close_price    = None,
+                        pips_moved            = 0.0,
+                        signal_correct        = None,
+                        directionally_correct = None,
+                        would_have_hit_tp     = False,
+                        would_have_hit_sl     = False,
+                        max_favorable_pips    = 0.0,
+                        max_adverse_pips      = 0.0,
+                        notes                 = f"Limit order never filled. VTrade status: {vtrade.status}. No entry, no P&L.",
+                    )
+                    session.add(row)
+                    session.commit()
+                    expired_count += 1
+                    print(f"  Signal {sig.id} ({signal_date} {sig.signal}): CANCELLED (limit never filled)")
+                except Exception as e:
+                    session.rollback()
+                    log.error("Failed to save cancelled outcome for signal id=%s: %s", sig.id, e)
+                    skipped += 1
+                continue
+
         # Fetch hourly data from signal date to today
         df = fetch_hourly_data(pair, signal_date, date.today())
 

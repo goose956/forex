@@ -250,13 +250,16 @@ def main():
         # For limit/stop orders: check fill status before resolving.
         # If the virtual trade is still pending_entry or was cancelled,
         # the order was never filled -- record as cancelled and skip P&L resolution.
-        if sig.order_type in ("limit", "stop"):
-            from tracker.database import VirtualTrade
-            vtrade = session.query(VirtualTrade).filter_by(signal_id=sig.id).first()
+        # Use virtual trade order_type as fallback for older signals missing the column.
+        from tracker.database import VirtualTrade as _VT
+        _vt_check = session.query(_VT).filter_by(signal_id=sig.id).first()
+        sig_order_type = sig.order_type or (_vt_check.order_type if _vt_check else None)
+        if sig_order_type in ("limit", "stop"):
+            vtrade = _vt_check  # already fetched above
             if vtrade and vtrade.status in ("pending_entry", "shadow_pending", "cancelled", "shadow_cancelled"):
                 log.info(
                     "Signal id=%s is a %s order with vtrade status=%s -- limit never filled, skipping outcome.",
-                    sig.id, sig.order_type, vtrade.status,
+                    sig.id, sig_order_type, vtrade.status,
                 )
                 # Record a cancelled outcome so it doesn't get re-checked every day
                 try:

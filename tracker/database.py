@@ -138,6 +138,10 @@ class Signal(Base):
     vix_signal          = Column(Text, nullable=True)     # clear / caution / avoid
     eurusd_trend        = Column(Text, nullable=True)     # up / down / sideways
     eurusd_rsi          = Column(Numeric(6, 2), nullable=True)
+    order_type          = Column(Text, nullable=True)     # market / limit / stop
+    smart_entry_price   = Column(Numeric(12, 5), nullable=True)
+    entry_rationale     = Column(Text, nullable=True)
+    pips_from_current   = Column(Numeric(6, 1), nullable=True)
 
 
 # ---- Table: outcomes ---------------------------------------------------------

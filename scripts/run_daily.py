@@ -115,43 +115,73 @@ def get_month_to_date_cost() -> float:
 def calculate_trade_levels(price_data: dict, signal: str) -> dict:
     """
     Calculate entry, stop loss, take profit from price data.
-    Uses ATR-based minimum stop distance and 1:2 R:R minimum.
-    """
-    close = price_data.get("close") or 0
-    atr   = price_data.get("atr_14") or (close * 0.005)  # fallback 0.5%
-    support    = price_data.get("nearest_support")    or (close - atr * 2)
-    resistance = price_data.get("nearest_resistance") or (close + atr * 2)
 
-    min_stop = atr * 0.5   # ~50 pips at typical GBPUSD ATR
+    SL: placed just beyond nearest support/resistance.
+        Capped at MAX_SL_PIPS so inflated ATR (from volatile periods)
+        doesn't produce unreachable levels.
+    TP: targets the next key level first (resistance for BUY, support for SELL).
+        Falls back to 1:2 R:R from SL distance if no useful level found.
+        Minimum 1:1.5 R:R enforced.
+    """
+    close      = float(price_data.get("close") or 0)
+    atr        = float(price_data.get("atr_14") or (close * 0.005))
+    support    = price_data.get("nearest_support")
+    resistance = price_data.get("nearest_resistance")
+    support    = float(support)    if support    else (close - atr * 2)
+    resistance = float(resistance) if resistance else (close + atr * 2)
+
+    MAX_SL_PIPS = 40   # cap stop at 40 pips -- prevents ATR spikes from inflating levels
+    MIN_SL_PIPS = 10   # never tighter than 10 pips
+    BUFFER      = 0.00020  # 2 pip buffer beyond key level
 
     if signal == "BUY":
         entry = close
-        sl    = max(support - atr * 0.1, entry - atr * 0.6)
-        sl    = min(sl, entry - min_stop)   # never tighter than min_stop
-        dist  = entry - sl
-        tp    = entry + dist * 2.0          # 1:2 R:R
+        # SL just below support, capped at MAX_SL_PIPS
+        raw_sl   = support - BUFFER
+        sl_pips  = min((entry - raw_sl) * 10000, MAX_SL_PIPS)
+        sl_pips  = max(sl_pips, MIN_SL_PIPS)
+        sl       = entry - sl_pips / 10000
+        dist     = entry - sl
+        # TP: aim for resistance first; if resistance is too close (<1:1.5 R:R) use 2× dist
+        tp_level = resistance - BUFFER
+        tp_pips_level = (tp_level - entry) * 10000
+        if tp_pips_level >= sl_pips * 1.5:
+            tp = tp_level              # resistance gives acceptable R:R
+        else:
+            tp = entry + dist * 2.0    # fall back to 1:2 R:R
+
     elif signal == "SELL":
         entry = close
-        sl    = min(resistance + atr * 0.1, entry + atr * 0.6)
-        sl    = max(sl, entry + min_stop)
-        dist  = sl - entry
-        tp    = entry - dist * 2.0
+        # SL just above resistance, capped at MAX_SL_PIPS
+        raw_sl   = resistance + BUFFER
+        sl_pips  = min((raw_sl - entry) * 10000, MAX_SL_PIPS)
+        sl_pips  = max(sl_pips, MIN_SL_PIPS)
+        sl       = entry + sl_pips / 10000
+        dist     = sl - entry
+        # TP: aim for support first; if too close use 2× dist
+        tp_level = support + BUFFER
+        tp_pips_level = (entry - tp_level) * 10000
+        if tp_pips_level >= sl_pips * 1.5:
+            tp = tp_level
+        else:
+            tp = entry - dist * 2.0
+
     else:  # HOLD
         entry = close
-        sl    = close - atr * 0.6
-        tp    = close + atr * 1.2
-        dist  = atr * 0.6
+        sl    = close - atr * 0.3
+        tp    = close + atr * 0.6
+        dist  = atr * 0.3
 
     pips_stop  = abs(entry - sl) * 10000
     pips_tp    = abs(entry - tp) * 10000
     rr         = round(pips_tp / pips_stop, 2) if pips_stop > 0 else 0.0
 
     return {
-        "entry":      round(entry, 5),
-        "stop_loss":  round(sl, 5),
+        "entry":       round(entry, 5),
+        "stop_loss":   round(sl, 5),
         "take_profit": round(tp, 5),
-        "pips_stop":  round(pips_stop, 1),
-        "pips_tp":    round(pips_tp, 1),
+        "pips_stop":   round(pips_stop, 1),
+        "pips_tp":     round(pips_tp, 1),
         "risk_reward": rr,
     }
 

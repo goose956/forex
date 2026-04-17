@@ -1040,6 +1040,48 @@ def main():
             trade_skip_reason = news_reason
         log.warning(f"Paper trade BLOCKED by news risk -- {news_reason}")
 
+    # Entry quality check -- never skips, only adjusts position size.
+    # Grades entry as clean / caution / extended based on RSI stretch.
+    # Stored as metadata so data later shows whether extended entries perform worse.
+    entry_quality       = "clean"
+    entry_quality_note  = ""
+    base_risk_pct       = scorecard["position_size_pct"] if scorecard else 0.5
+    adjusted_risk_pct   = base_risk_pct
+
+    if combined["signal"] in ("BUY", "SELL") and not trade_skip_reason:
+        rsi = price_data.get("rsi_value") if price_data else None
+        sig = combined["signal"]
+        if rsi is not None:
+            rsi = float(rsi)
+            if sig == "BUY":
+                if rsi > 70:
+                    entry_quality      = "extended"
+                    entry_quality_note = f"RSI {rsi:.0f} -- overbought, position halved"
+                    adjusted_risk_pct  = round(base_risk_pct * 0.5, 2)
+                elif rsi > 65:
+                    entry_quality      = "caution"
+                    entry_quality_note = f"RSI {rsi:.0f} -- elevated, position reduced 25%"
+                    adjusted_risk_pct  = round(base_risk_pct * 0.75, 2)
+                else:
+                    entry_quality_note = f"RSI {rsi:.0f} -- clean entry"
+            elif sig == "SELL":
+                if rsi < 30:
+                    entry_quality      = "extended"
+                    entry_quality_note = f"RSI {rsi:.0f} -- oversold, position halved"
+                    adjusted_risk_pct  = round(base_risk_pct * 0.5, 2)
+                elif rsi < 35:
+                    entry_quality      = "caution"
+                    entry_quality_note = f"RSI {rsi:.0f} -- extended, position reduced 25%"
+                    adjusted_risk_pct  = round(base_risk_pct * 0.75, 2)
+                else:
+                    entry_quality_note = f"RSI {rsi:.0f} -- clean entry"
+
+        if entry_quality != "clean":
+            log.info("Entry quality: %s -- %s (risk %.2f%% -> %.2f%%)",
+                     entry_quality, entry_quality_note, base_risk_pct, adjusted_risk_pct)
+        else:
+            log.info("Entry quality: clean -- %s", entry_quality_note)
+
     try:
         from tracker.virtual_account import open_trade
         from tracker.database import get_session, initialise_virtual_account
@@ -1063,7 +1105,7 @@ def main():
             vsession,
             trade_signal,
             confluence_grade=scorecard["grade"] if scorecard else None,
-            risk_pct=scorecard["position_size_pct"] if scorecard else None,
+            risk_pct=adjusted_risk_pct,
             order_type=ot,
             limit_price=lim_price,
             expires_bars=exp_bars,
@@ -1136,11 +1178,15 @@ def main():
         print("-" * 50)
 
     # Step 12b: Print paper trade info
-    if vtrade and vtrade.status == "open":
+    if vtrade and vtrade.status in ("open", "pending_entry"):
         balance  = float(vtrade.opening_balance)
         risk_gbp = float(vtrade.risk_gbp)
         print(f"  PAPER TRADE: GBP {risk_gbp:.2f} at risk ({vtrade.risk_pct}% of GBP {balance:.2f})")
         print(f"  Spread cost: GBP {float(vtrade.spread_cost_gbp):.4f}")
+        if entry_quality != "clean":
+            print(f"  ENTRY QUALITY: {entry_quality.upper()} -- {entry_quality_note}")
+        else:
+            print(f"  ENTRY QUALITY: CLEAN -- {entry_quality_note}")
         print("-" * 50)
 
     # Step 13: Send email alert

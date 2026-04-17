@@ -1038,6 +1038,10 @@ class ConfluenceEngine:
             # Buffer to add/subtract from key level (5 pips)
             BUFFER = 0.0005
 
+            # Limit orders only make sense if price is close enough to fill within a session.
+            # Beyond 30 pips away, use market entry instead.
+            LIMIT_MAX_PIPS = 30
+
             if sig == 'BUY':
                 if at_level and level_type == 'at_support':
                     # Already at support -- enter now
@@ -1046,8 +1050,8 @@ class ConfluenceEngine:
                     rationale = f'Price at support {support:.4f} -- market entry now'
                     expires = 1
 
-                elif support and (current - support) * 10000 <= 50:
-                    # Within 50 pips of support -- limit order for pullback
+                elif support and (current - support) * 10000 <= LIMIT_MAX_PIPS:
+                    # Support within 30 pips -- realistic intraday pullback, use limit
                     entry = round(support + BUFFER, 5)
                     order_type = 'limit'
                     pips_away = (current - entry) * 10000
@@ -1055,25 +1059,21 @@ class ConfluenceEngine:
                     expires = 1
 
                 elif adx > 30 and rsi < 65:
-                    # Strong uptrend, no close support -- buy the breakout
+                    # Strong uptrend -- buy the breakout
                     entry = round(current + BUFFER, 5)
                     order_type = 'stop'
                     rationale = f'Strong trend (ADX {adx:.0f}) -- stop entry on breakout above {entry:.4f}'
                     expires = 1
 
-                elif support:
-                    # Support exists but further away -- still wait for pullback
-                    entry = round(support + BUFFER, 5)
-                    order_type = 'limit'
-                    pips_away = (current - entry) * 10000
-                    rationale = f'Limit order: wait for pullback to support {support:.4f} ({pips_away:.0f} pips below)'
-                    expires = 1
-
                 else:
-                    # No support found -- use current price
+                    # Support too far away or not found -- enter at market
                     entry = current
                     order_type = 'market'
-                    rationale = 'No key support identified -- entering at current price'
+                    pips_to_support = round((current - support) * 10000, 0) if support else None
+                    rationale = (
+                        f'Support {support:.4f} is {pips_to_support:.0f} pips away -- market entry at current price'
+                        if support else 'No key support identified -- entering at current price'
+                    )
                     expires = 1
 
             elif sig == 'SELL':
@@ -1084,8 +1084,8 @@ class ConfluenceEngine:
                     rationale = f'Price at resistance {resistance:.4f} -- market entry now'
                     expires = 1
 
-                elif resistance and (resistance - current) * 10000 <= 50:
-                    # Within 50 pips of resistance -- limit order for rally
+                elif resistance and (resistance - current) * 10000 <= LIMIT_MAX_PIPS:
+                    # Resistance within 30 pips -- realistic intraday rally, use limit
                     entry = round(resistance - BUFFER, 5)
                     order_type = 'limit'
                     pips_away = (entry - current) * 10000
@@ -1099,17 +1099,15 @@ class ConfluenceEngine:
                     rationale = f'Strong trend (ADX {adx:.0f}) -- stop entry on breakdown below {entry:.4f}'
                     expires = 1
 
-                elif resistance:
-                    entry = round(resistance - BUFFER, 5)
-                    order_type = 'limit'
-                    pips_away = (entry - current) * 10000
-                    rationale = f'Limit order: wait for rally to resistance {resistance:.4f} ({pips_away:.0f} pips above)'
-                    expires = 1
-
                 else:
+                    # Resistance too far away or not found -- enter at market
                     entry = current
                     order_type = 'market'
-                    rationale = 'No key resistance identified -- entering at current price'
+                    pips_to_resistance = round((resistance - current) * 10000, 0) if resistance else None
+                    rationale = (
+                        f'Resistance {resistance:.4f} is {pips_to_resistance:.0f} pips away -- market entry at current price'
+                        if resistance else 'No key resistance identified -- entering at current price'
+                    )
                     expires = 1
 
             else:

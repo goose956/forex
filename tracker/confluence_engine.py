@@ -56,7 +56,22 @@ class ConfluenceEngine:
             highs  = df["High"].values.astype(float)
             lows   = df["Low"].values.astype(float)
 
-            current_price = float(closes[-1])
+            # Fetch live intraday price -- daily candle close is yesterday's close
+            # at 07:00 UTC when the script runs. Use 5m data for true current price.
+            try:
+                intraday = yf.download(pair, period="1d", interval="5m",
+                                       progress=False, auto_adjust=True)
+                if intraday is not None and not intraday.empty:
+                    if isinstance(intraday.columns, pd.MultiIndex):
+                        intraday.columns = intraday.columns.droplevel(1)
+                    current_price = float(intraday["Close"].iloc[-1])
+                    log.info("Live price from 5m intraday: %.5f", current_price)
+                else:
+                    current_price = float(closes[-1])
+                    log.warning("Intraday fetch empty -- using daily close: %.5f", current_price)
+            except Exception as e:
+                current_price = float(closes[-1])
+                log.warning("Intraday price fetch failed (%s) -- using daily close: %.5f", e, current_price)
 
             # ---- Moving averages ----
             price_50ma  = float(np.mean(closes[-50:])) if len(closes) >= 50 else None
